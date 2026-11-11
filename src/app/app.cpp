@@ -421,6 +421,8 @@ void App::on_size()
 	GetClientRect(hwnd_, &rc);
 	renderer_.resize(static_cast<UINT>(std::max<LONG>(1, rc.right)), static_cast<UINT>(std::max<LONG>(1, rc.bottom)));
 	sync_metrics();
+	if (ask_.active)
+		ask_build_view(); // панель пересчитывается под новый размер окна
 	update_scrollbars();
 	invalidate();
 }
