@@ -44,7 +44,7 @@ jobs:
       - name: yo-cli собрался
         run: test -x build/linux-clang-debug/src/cli/yo-cli
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yo-cli-linux-x86_64
           path: build/linux-clang-debug/src/cli/yo-cli
@@ -103,7 +103,7 @@ jobs:
           Copy-Item README.md, NOTICE, LICENSE dist/
           Compress-Archive -Path dist/* -DestinationPath yo-windows-x64.zip -Force
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yo-windows-x64
           path: yo-windows-x64.zip
@@ -133,7 +133,7 @@ jobs:
           file build/zig-win/src/app/yo-gui.exe | tee /dev/stderr | grep -q 'PE32+'
           file build/zig-win/src/cli/yo-cli.exe | grep -q 'PE32+'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yo-windows-x64-zig
           path: |
