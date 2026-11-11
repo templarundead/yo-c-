@@ -28,7 +28,7 @@ jobs:
           Copy-Item tests/data/yox.dat, tests/data/yo_regexpr.dat dist/
           Copy-Item README.md, NOTICE, LICENSE dist/
           Compress-Archive -Path dist/* -DestinationPath "yo-${{ github.ref_name }}-windows-x64.zip" -Force
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: "yo-${{ github.ref_name }}-windows-x64.zip"
@@ -50,7 +50,7 @@ jobs:
           cp build/linux-clang-debug/src/cli/yo-cli dist/
           cp README.md NOTICE LICENSE dist/
           tar -czf "yo-${{ github.ref_name }}-linux-x86_64.tar.gz" -C dist .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: "yo-${{ github.ref_name }}-linux-x86_64.tar.gz"
@@ -59,7 +59,7 @@ jobs:
     needs: [windows, linux]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: artifacts }
       - name: GitHub Release
         env:
