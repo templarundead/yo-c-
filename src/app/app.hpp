@@ -8,8 +8,12 @@
 #include "render.hpp"
 
 #include "yo/codec.hpp"
+#include "yo/dict.hpp"
 #include "yo/editor.hpp"
+#include "yo/regexdict.hpp"
 #include "yo/textbuf.hpp"
+#include "yo/yofy.hpp"
+#include "yo/yofytext.hpp"
 
 #include <windows.h>
 #include <shellapi.h> // HDROP
@@ -72,6 +76,9 @@ private:
 	[[nodiscard]] std::wstring status_text() const;
 	[[nodiscard]] std::string insert_eol_bytes() const;
 
+	bool ensure_yoficator();
+	void run_yofification();
+
 	void clipboard_copy(bool cut);
 	void clipboard_paste();
 	void find_toggle();
@@ -87,6 +94,11 @@ private:
 	std::shared_ptr<TextBuffer> buf_;
 	std::unique_ptr<Editor> ed_;
 	Renderer renderer_;
+
+	std::unique_ptr<Dictionary> dict_;
+	std::unique_ptr<RegexDictionary> regexdict_;
+	std::unique_ptr<Yoficator> yofy_;
+	YofyResult last_yofy_{};
 
 	std::filesystem::path path_;
 	Encoding enc_ = Encoding::utf8;

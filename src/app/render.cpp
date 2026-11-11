@@ -28,6 +28,11 @@ void Renderer::shutdown()
 		brush_->Release();
 		brush_ = nullptr;
 	}
+	if (accent_brush_ != nullptr)
+	{
+		accent_brush_->Release();
+		accent_brush_ = nullptr;
+	}
 	if (fmt_ != nullptr)
 	{
 		fmt_->Release();
@@ -182,6 +187,19 @@ bool Renderer::create_render_target(HWND hwnd)
 		brush_->Release();
 		brush_ = nullptr;
 	}
+	if (accent_brush_ != nullptr)
+	{
+		accent_brush_->Release();
+		accent_brush_ = nullptr;
+	}
+	// Кэш раскладок ссылается на кисти подсветки — сбрасываем его вместе
+	// с целевым буфером.
+	for (CachedLine& c : cache_)
+	{
+		if (c.layout != nullptr)
+			c.layout->Release();
+	}
+	cache_.clear();
 	if (factory_ == nullptr || hwnd == nullptr)
 		return false;
 	RECT rc{};
@@ -195,7 +213,9 @@ bool Renderer::create_render_target(HWND hwnd)
 	const auto hwnd_props = D2D1::HwndRenderTargetProperties(hwnd, size, D2D1_PRESENT_OPTIONS_NONE);
 	if (FAILED(factory_->CreateHwndRenderTarget(rt_props, hwnd_props, &rt_)))
 		return false;
-	return SUCCEEDED(rt_->CreateSolidColorBrush(theme_.text, &brush_));
+	if (FAILED(rt_->CreateSolidColorBrush(theme_.text, &brush_)))
+		return false;
+	return SUCCEEDED(rt_->CreateSolidColorBrush(theme_.accent, &accent_brush_));
 }
 
 void Renderer::resize(UINT width_px, UINT height_px)
@@ -341,6 +361,16 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 			if (FAILED(dwrite_->CreateTextLayout(wide.c_str(), static_cast<UINT32>(wide.size()), fmt_,
 												 1.0e6F, line_h_ * 2.0F, &layout)))
 				continue;
+			// Подсветка ё (как метка ёфикации в оригинале): акцентный цвет
+			// на каждый символ «ё»/«Ё» через drawing effect.
+			if (accent_brush_ != nullptr)
+			{
+				for (UINT32 p = 0; p < static_cast<UINT32>(wide.size()); ++p)
+				{
+					if (wide[p] == L'ё' || wide[p] == L'Ё')
+						layout->SetDrawingEffect(accent_brush_, DWRITE_TEXT_RANGE{ p, 1 });
+				}
+			}
 			// Ищем свободный слот: неиспользованный с другим текстом.
 			for (CachedLine& c : cache_)
 			{

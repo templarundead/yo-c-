@@ -34,6 +34,7 @@ constexpr int kCmdPaste = 1014;
 constexpr int kCmdSelectAll = 1015;
 constexpr int kCmdFind = 1016;
 constexpr int kCmdFindNext = 1017;
+constexpr int kCmdYofify = 1030;
 constexpr int kCmdFontBigger = 1020;
 constexpr int kCmdFontSmaller = 1021;
 
@@ -262,6 +263,10 @@ void App::setup_menu()
 	AppendMenuW(edit, MF_STRING, kCmdFindNext, L"Найти &далее\tF3");
 	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(edit), L"&Правка");
 
+	const HMENU yofy = CreatePopupMenu();
+	AppendMenuW(yofy, MF_STRING, kCmdYofify, L"&Ёфицировать\tCtrl+E");
+	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(yofy), L"&Ёфикация");
+
 	const HMENU view = CreatePopupMenu();
 	AppendMenuW(view, MF_STRING, kCmdFontBigger, L"&Крупнее\tCtrl++");
 	AppendMenuW(view, MF_STRING, kCmdFontSmaller, L"&Мельче\tCtrl+-");
@@ -283,6 +288,7 @@ void App::setup_accels()
 		{ FCONTROL | FVIRTKEY, 'V', kCmdPaste },
 		{ FCONTROL | FVIRTKEY, 'A', kCmdSelectAll },
 		{ FCONTROL | FVIRTKEY, 'F', kCmdFind },
+		{ FCONTROL | FVIRTKEY, 'E', kCmdYofify },
 		{ FVIRTKEY, VK_F3, kCmdFindNext },
 		{ FCONTROL | FVIRTKEY, VK_OEM_PLUS, kCmdFontBigger },
 		{ FCONTROL | FVIRTKEY, VK_OEM_MINUS, kCmdFontSmaller },
@@ -372,6 +378,13 @@ std::wstring App::status_text() const
 	text += format_size(buf_->size());
 	if (readonly_)
 		text += L"   [только чтение]";
+	if (last_yofy_.lines > 0)
+	{
+		text += L"   ёфикация: замен ";
+		text += std::to_wstring(last_yofy_.replaced);
+		text += L", строк ";
+		text += std::to_wstring(last_yofy_.lines);
+	}
 	if (show_find_ && find_query_.empty())
 		text += L"   введите образец, Enter — найти, Esc — закрыть";
 	return text;
@@ -726,6 +739,9 @@ void App::on_command(int id)
 	case kCmdFindNext:
 		find_next();
 		break;
+	case kCmdYofify:
+		run_yofification();
+		break;
 	case kCmdFontBigger:
 		if (renderer_.set_font_size(font_size_ + 1.0F, hwnd_))
 		{
@@ -854,6 +870,114 @@ void App::find_next()
 	ed_->set_caret(hit + find_query_.size(), true);
 	caret_on_ = true;
 	update_scrollbars();
+	invalidate();
+}
+
+// ---------------------------------------------------------------- ёфикация
+
+namespace {
+
+// Каталоги, где ищутся словари: рядом с exe, в data/ и в репозитории.
+std::vector<std::filesystem::path> data_dirs()
+{
+	std::vector<std::filesystem::path> dirs;
+	wchar_t exe[32768] = L"";
+	if (GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe))) > 0)
+	{
+		const std::filesystem::path exe_path(exe);
+		dirs.push_back(exe_path.parent_path());
+		dirs.push_back(exe_path.parent_path() / L"data");
+		dirs.push_back(exe_path.parent_path() / L".." / L"tests" / L"data");
+		dirs.push_back(exe_path.parent_path() / L".." / L".." / L"tests" / L"data");
+	}
+#ifdef YO_GUI_DATA_DIR
+	dirs.emplace_back(std::filesystem::path(std::wstring(L"" YO_GUI_DATA_DIR)));
+#endif
+	return dirs;
+}
+
+std::filesystem::path find_data_file(const std::filesystem::path& name)
+{
+	for (const auto& dir : data_dirs())
+	{
+		std::error_code ec;
+		const std::filesystem::path candidate = dir / name;
+		if (std::filesystem::exists(candidate, ec))
+			return candidate;
+	}
+	return {};
+}
+
+} // namespace
+
+bool App::ensure_yoficator()
+{
+	if (yofy_)
+		return true;
+
+	const std::filesystem::path dict_path = find_data_file(L"yox.dat");
+	const std::filesystem::path regex_path = find_data_file(L"yo_regexpr.dat");
+	if (dict_path.empty())
+	{
+		MessageBoxW(hwnd_,
+					L"Не найден словарь yox.dat.\n"
+					L"Положите yox.dat и yo_regexpr.dat рядом с программой "
+					L"(или в каталог data) и повторите.",
+					L"Ё", MB_ICONWARNING);
+		return false;
+	}
+
+	std::vector<LoadIssue> issues;
+	auto dict = Dictionary::load(dict_path, &issues);
+	if (!dict)
+	{
+		MessageBoxW(hwnd_, L"Не удалось загрузить словарь yox.dat.", L"Ё", MB_ICONERROR);
+		return false;
+	}
+	dict_ = std::make_unique<Dictionary>(std::move(*dict));
+
+	if (!regex_path.empty())
+	{
+		auto regex = RegexDictionary::load(regex_path, &issues);
+		if (regex)
+			regexdict_ = std::make_unique<RegexDictionary>(std::move(*regex));
+	}
+
+	Options opts;
+	opts.mark = true;
+	yofy_ = std::make_unique<Yoficator>(*dict_, regexdict_.get(), opts);
+	// Панель вопросов (AskPanel) — этап 4; пока все вопросы решаются «Ё»
+	// (как кнопка «Всегда Ё» в оригинале).
+	yofy_->set_ask([](const AskRequest&) { return AskAnswer::yo; });
+	return true;
+}
+
+void App::run_yofification()
+{
+	if (readonly_)
+	{
+		MessageBeep(MB_ICONASTERISK);
+		return;
+	}
+	if (!ensure_yoficator())
+		return;
+
+	const std::size_t from = ed_->has_selection() ? ed_->sel_begin() : 0;
+	const std::size_t to = ed_->has_selection() ? ed_->sel_end() : buf_->size();
+	if (from >= to)
+		return;
+
+	SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+	yofy_->stats().reset();
+	last_yofy_ = yofify_range(*buf_, from, to, *yofy_);
+	SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+
+	if (last_yofy_.changed)
+	{
+		ed_->set_caret(std::min(from, buf_->size()));
+		update_scrollbars();
+		update_title();
+	}
 	invalidate();
 }
 

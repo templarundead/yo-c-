@@ -78,6 +78,7 @@ private:
 	IDWriteTextFormat* fmt_ = nullptr;		// основной текст
 	IDWriteTextFormat* fmt_ui_ = nullptr;	// статус/поиск
 	ID2D1SolidColorBrush* brush_ = nullptr;
+	ID2D1SolidColorBrush* accent_brush_ = nullptr; // подсветка ё
 
 	float dpi_scale_ = 1.0F;
 	float font_size_ = 15.0F;
