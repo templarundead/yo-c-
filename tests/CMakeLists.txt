@@ -3,6 +3,8 @@ add_executable(yo_tests
 	test_yofy.cpp
 	test_golden.cpp
 	test_textbuf.cpp
+	test_editor.cpp
+	test_utf.cpp
 )
 
 target_link_libraries(yo_tests PRIVATE yo::core Catch2::Catch2WithMain)

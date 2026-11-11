@@ -8,6 +8,9 @@ project(yo-c- LANGUAGES CXX VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Модули C++ не используем; сканирование зависимостей ломается на кросс-
+# компиляторах без clang-scan-deps (zig cc, mingw) и только замедляет сборку.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(YO_BUILD_GUI "Собрать GUI (только Windows)" OFF)

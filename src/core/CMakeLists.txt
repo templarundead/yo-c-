@@ -6,6 +6,8 @@ add_library(yo_core STATIC
 	src/yofy.cpp
 	src/mapped.cpp
 	src/textbuf.cpp
+	src/editor.cpp
+	src/utf.cpp
 )
 add_library(yo::core ALIAS yo_core)
 
