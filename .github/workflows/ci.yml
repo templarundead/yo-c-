@@ -56,6 +56,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Окружение MSVC (Windows SDK, CRT)
+        # Без этого cl.exe не в PATH, и CMake выбирает свалившийся рядом
+        # MinGW-g++ — сборка «в MSVC-джобе» падала на collect2.exe.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - uses: actions/cache@v6
         with:
           path: .deps
@@ -75,7 +82,8 @@ jobs:
         run: |
           cmake --build --preset win-msvc-release 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) {
-            Get-Content build.log | Select-String -Pattern 'error|fatal' |
+            Get-Content build.log |
+              Select-String -Pattern 'error C\d|error LNK\d|fatal error|undefined reference|ld returned|error:' |
               Select-Object -First 12 |
               ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
             exit 1
@@ -111,7 +119,8 @@ jobs:
         run: |
           cmake --build --preset win-clang-release 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) {
-            Get-Content build.log | Select-String -Pattern 'error|fatal' |
+            Get-Content build.log |
+              Select-String -Pattern 'error C\d|error LNK\d|fatal error|undefined reference|ld returned|error:' |
               Select-Object -First 12 |
               ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
             exit 1
