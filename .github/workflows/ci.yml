@@ -117,10 +117,13 @@ jobs:
 
       - name: zig и ninja
         run: |
-          python3 -m pip install --break-system-packages ziglang ninja
-          # pip может положить скрипты в ~/.local/bin — добавляем в PATH явно,
-          # иначе find_program(YO_ZIG_DRIVER ... REQUIRED) не найдёт zig.
+          python3 -m pip install --break-system-packages ziglang
+          # Каталог с исполняемым файлом zig ищем через сам пакет: pip может
+          # положить его и в site-packages, и в ~/.local/bin.
+          ZIG_DIR=$(python3 -c "import os, ziglang; print(os.path.dirname(ziglang.__file__))")
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          command -v ninja >/dev/null || sudo apt-get install -y ninja-build
 
       - name: Версии инструментов
         run: |
