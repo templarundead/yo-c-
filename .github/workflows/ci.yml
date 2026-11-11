@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Abseil/RE2/Catch2/Benchmark качаются сюда, а не в каталог сборки:
+  # так их можно кэшировать между прогонами.
+  FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps
+
+jobs:
+  linux:
+    name: Linux / clang 20, ASan+UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LLVM 20 и ninja
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
+          sudo apt-get install -y ninja-build
+
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-linux-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
+
+      - name: Настройка
+        run: cmake --preset linux-clang-debug -DCMAKE_CXX_COMPILER=clang++-20
+
+      - name: Сборка
+        run: cmake --build --preset linux-clang-debug
+
+      - name: Тесты
+        run: ctest --test-dir build/linux-clang-debug --output-on-failure
+
+      - name: yo-cli собрался
+        run: test -x build/linux-clang-debug/src/cli/yo-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yo-cli-linux-x86_64
+          path: build/linux-clang-debug/src/cli/yo-cli
+          if-no-files-found: error
+
+  windows-msvc:
+    name: Windows / MSVC, тесты
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-windows-msvc-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
+
+      - name: Настройка (MSVC Release + тесты)
+        run: cmake --preset win-msvc-release -DYO_BUILD_TESTS=ON
+
+      - name: Сборка
+        run: cmake --build --preset win-msvc-release
+
+      - name: Тесты
+        run: ctest --test-dir build/win-msvc-release --output-on-failure
+
+  windows-clang-cl:
+    name: Windows / clang-cl, артефакты
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-windows-clang-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
+
+      - name: Окружение MSVC (Windows SDK, CRT)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Настройка
+        run: cmake --preset win-clang-release
+
+      - name: Сборка GUI и CLI
+        run: cmake --build --preset win-clang-release
+
+      - name: Комплект
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/win-clang-release/src/app/yo-gui.exe dist/
+          Copy-Item build/win-clang-release/src/cli/yo-cli.exe dist/
+          # Словари лежат рядом с exe — оттуда их ищет ensure_yoficator().
+          Copy-Item tests/data/yox.dat, tests/data/yo_regexpr.dat dist/
+          Copy-Item README.md, NOTICE, LICENSE dist/
+          Compress-Archive -Path dist/* -DestinationPath yo-windows-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yo-windows-x64
+          path: yo-windows-x64.zip
+          if-no-files-found: error
+
+  windows-cross:
+    name: Windows / кросс-сборка (zig, без Windows-SDK)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: zig и ninja
+        run: pip install --break-system-packages ziglang ninja
+
+      - name: Настройка
+        run: >
+          cmake -S . -B build/zig-win -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/zig-windows.cmake
+          -DCMAKE_BUILD_TYPE=Release
+          -DYO_BUILD_GUI=ON -DYO_BUILD_CLI=ON -DYO_BUILD_TESTS=OFF
+
+      - name: Сборка
+        run: cmake --build build/zig-win
+
+      - name: Это действительно PE-файл
+        run: |
+          file build/zig-win/src/app/yo-gui.exe | tee /dev/stderr | grep -q 'PE32+'
+          file build/zig-win/src/cli/yo-cli.exe | grep -q 'PE32+'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yo-windows-x64-zig
+          path: |
+            build/zig-win/src/app/yo-gui.exe
+            build/zig-win/src/cli/yo-cli.exe
+          if-no-files-found: error
