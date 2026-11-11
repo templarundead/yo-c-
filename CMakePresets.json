@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": 3.28,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "win-clang-debug",
