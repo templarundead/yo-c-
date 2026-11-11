@@ -1,0 +1,195 @@
+// Панель вопросов ёфикации: тексты, раскладка кнопок, подрезка строк.
+
+#include "yo/askpanel.hpp"
+#include "yo/codec.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <string>
+
+using namespace yo;
+
+namespace {
+
+UString u(std::string_view utf8)
+{
+	return decode_line({ reinterpret_cast<const std::uint8_t*>(utf8.data()), utf8.size() },
+					   Encoding::utf8);
+}
+
+// Моноширинный «шрифт»: ширина = число байт * 8.
+float mono(std::string_view text) { return static_cast<float>(text.size()) * 8.0F; }
+
+AskLayoutInput base_input()
+{
+	AskLayoutInput in;
+	in.client_w = 1000.0F;
+	in.client_h = 600.0F;
+	in.status_h = 20.0F;
+	in.padding = 6.0F;
+	in.line_height = 18.0F;
+	in.char_width = 8.0F;
+	in.variants = "1  Е: все          2  Ё: всё";
+	in.reason = "выберите написание";
+	in.context = "стр. 12: и вот мы все еще не пришли";
+	return in;
+}
+
+bool well_formed_utf8(std::string_view text)
+{
+	std::size_t i = 0;
+	while (i < text.size())
+	{
+		const auto c = static_cast<unsigned char>(text[i]);
+		std::size_t extra = 0;
+		if (c < 0x80U)
+			extra = 0;
+		else if ((c & 0xE0U) == 0xC0U)
+			extra = 1;
+		else if ((c & 0xF0U) == 0xE0U)
+			extra = 2;
+		else if ((c & 0xF8U) == 0xF0U)
+			extra = 3;
+		else
+			return false;
+		if (i + extra >= text.size() && extra > 0)
+			return false;
+		for (std::size_t k = 1; k <= extra; ++k)
+		{
+			if ((static_cast<unsigned char>(text[i + k]) & 0xC0U) != 0x80U)
+				return false;
+		}
+		i += extra + 1;
+	}
+	return true;
+}
+
+} // namespace
+
+TEST_CASE("панель вопросов: тексты вариантов и причины", "[askpanel]")
+{
+	AskRequest req;
+	req.word1 = u("все");
+	req.word2 = u("всё");
+	AskTexts texts = make_ask_texts(req);
+	CHECK(texts.variants == "1  Е: все          2  Ё: всё");
+	CHECK(texts.reason == "выберите написание");
+
+	SECTION("без варианта с ё второй кнопки в тексте нет")
+	{
+		req.word2 = UString();
+		req.wrong_yo = true;
+		texts = make_ask_texts(req);
+		CHECK(texts.variants == "1  Е: все");
+		CHECK(texts.reason.find("Е") != std::string::npos);
+	}
+	SECTION("подсказка «здесь должна быть Ё»")
+	{
+		req.wrong_ye = true;
+		texts = make_ask_texts(req);
+		CHECK(texts.reason.find("Ё") != std::string::npos);
+	}
+}
+
+TEST_CASE("панель вопросов: ответы переводятся в AskAnswer", "[askpanel]")
+{
+	CHECK(to_answer(AskChoice::ye) == AskAnswer::ye);
+	CHECK(to_answer(AskChoice::yo) == AskAnswer::yo);
+	CHECK(to_answer(AskChoice::ye_all) == AskAnswer::ye_all);
+	CHECK(to_answer(AskChoice::yo_all) == AskAnswer::yo_all);
+	CHECK(to_answer(AskChoice::skip) == AskAnswer::skip);
+	CHECK(to_answer(AskChoice::undo) == AskAnswer::undo);
+	CHECK(to_answer(AskChoice::cancel) == AskAnswer::cancel);
+}
+
+TEST_CASE("панель вопросов: кнопки и строки в широком окне", "[askpanel]")
+{
+	const AskLayout layout = layout_ask_panel(base_input(), mono);
+	REQUIRE(layout.visible);
+	REQUIRE(layout.buttons.size() == 7);
+	REQUIRE(layout.rows.size() == 3);
+
+	CHECK(layout.x >= 6.0F);
+	CHECK(layout.y >= 0.0F);
+	CHECK(layout.y + layout.h <= 600.0F - 20.0F + 0.01F);
+	CHECK(layout.w <= 1000.0F - 12.0F + 0.01F);
+
+	// Все кнопки внутри панели и не наезжают друг на друга в ряду.
+	for (std::size_t i = 0; i < layout.buttons.size(); ++i)
+	{
+		const AskButtonBox& b = layout.buttons[i];
+		CHECK(b.x >= layout.x);
+		CHECK(b.x + b.w <= layout.x + layout.w + 0.01F);
+		CHECK(b.y >= layout.y);
+		CHECK(b.y + b.h <= layout.y + layout.h + 0.01F);
+		CHECK((b.label.rfind(std::to_string(i + 1), 0) == 0 || i == layout.buttons.size() - 1));
+		if (i > 0 && layout.buttons[i - 1].y == b.y)
+			CHECK(layout.buttons[i - 1].x + layout.buttons[i - 1].w <= b.x + 0.01F);
+	}
+
+	// Строки идут сверху вниз без наложений, кнопки — ниже строк.
+	CHECK(layout.rows[0].y < layout.rows[1].y);
+	CHECK(layout.rows[1].y < layout.rows[2].y);
+	CHECK(layout.rows[2].y + layout.rows[2].h <= layout.buttons.front().y + 0.01F);
+
+	CHECK(layout.index_of(AskChoice::ye) == 0);
+	CHECK(layout.index_of(AskChoice::yo) == 1);
+	CHECK(layout.index_of(AskChoice::cancel) == 6);
+}
+
+TEST_CASE("панель вопросов: в узком окне кнопки переносятся", "[askpanel]")
+{
+	AskLayoutInput in = base_input();
+	in.client_w = 320.0F;
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+
+	int rows_of_buttons = 0;
+	float previous_y = -1.0F;
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		if (b.y != previous_y)
+		{
+			++rows_of_buttons;
+			previous_y = b.y;
+		}
+		CHECK(b.x >= layout.x);
+		CHECK(b.x + b.w <= layout.x + layout.w + 0.01F);
+	}
+	CHECK(rows_of_buttons >= 2);
+	// Ряды идут сверху вниз.
+	float last_y = -1.0F;
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		if (b.y != last_y)
+		{
+			CHECK(b.y > last_y);
+			last_y = b.y;
+		}
+	}
+}
+
+TEST_CASE("панель вопросов: длинная строка контекста подрезается", "[askpanel]")
+{
+	AskLayoutInput in = base_input();
+	in.context = "стр. 7: ";
+	for (int i = 0; i < 200; ++i)
+		in.context += "ещё ";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.rows.size() == 3);
+	const std::string& text = layout.rows[2].text;
+	CHECK(text.ends_with("…"));
+	CHECK(mono(text) <= 1000.0F - 12.0F + 8.0F);
+	CHECK(well_formed_utf8(text));
+}
+
+TEST_CASE("панель вопросов: невысокое окно — панель не уезжает за верх", "[askpanel]")
+{
+	AskLayoutInput in = base_input();
+	in.client_w = 320.0F;
+	in.client_h = 220.0F;
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.y >= 0.0F);
+	CHECK(layout.h > 0.0F);
+}

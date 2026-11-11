@@ -1,0 +1,106 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": 3.28,
+  "configurePresets": [
+    {
+      "name": "win-clang-debug",
+      "displayName": "Windows clang-cl Debug (GUI + CLI + tests)",
+      "description": "Основной preset для разработки под Windows. clang-cl, C++23, /W4 /permissive- /WX, ASan+UBSan.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-clang-debug",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/clang-cl.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "23",
+        "YO_BUILD_GUI": "ON",
+        "YO_BUILD_CLI": "ON",
+        "YO_BUILD_TESTS": "ON",
+        "YO_BUILD_BENCH": "OFF",
+        "YO_SANITIZERS": "ON",
+        "YO_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "win-clang-release",
+      "displayName": "Windows clang-cl Release (GUI + CLI)",
+      "description": "Релизная сборка для поставки. /O2, без санитайзеров.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-clang-release",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/clang-cl.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "23",
+        "YO_BUILD_GUI": "ON",
+        "YO_BUILD_CLI": "ON",
+        "YO_BUILD_TESTS": "OFF",
+        "YO_BUILD_BENCH": "OFF",
+        "YO_SANITIZERS": "OFF",
+        "YO_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "win-clang-bench",
+      "displayName": "Windows clang-cl Release + benchmarks",
+      "description": "Бенчмарки ёфикации/поиска/открытия на 1 МБ / 100 МБ / 1 ГБ.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-clang-bench",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/clang-cl.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "23",
+        "YO_BUILD_GUI": "OFF",
+        "YO_BUILD_CLI": "ON",
+        "YO_BUILD_TESTS": "OFF",
+        "YO_BUILD_BENCH": "ON",
+        "YO_SANITIZERS": "OFF",
+        "YO_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-debug",
+      "displayName": "Linux clang Debug (core + CLI + tests, без GUI)",
+      "description": "CI для ядра: core собирается без Win32, тесты и CLI — на Linux.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-clang-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "YO_BUILD_GUI": "OFF",
+        "YO_BUILD_CLI": "ON",
+        "YO_BUILD_TESTS": "ON",
+        "YO_BUILD_BENCH": "OFF",
+        "YO_SANITIZERS": "ON",
+        "YO_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "win-msvc-release",
+      "displayName": "Windows MSVC Release (совместимость)",
+      "description": "Проверка сборки MSVC (без clang-cl) для CI-матрицы.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-msvc-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "23",
+        "YO_BUILD_GUI": "ON",
+        "YO_BUILD_CLI": "ON",
+        "YO_BUILD_TESTS": "OFF",
+        "YO_BUILD_BENCH": "OFF",
+        "YO_SANITIZERS": "OFF",
+        "YO_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win-clang-debug", "configurePreset": "win-clang-debug" },
+    { "name": "win-clang-release", "configurePreset": "win-clang-release" },
+    { "name": "win-clang-bench", "configurePreset": "win-clang-bench" },
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
+    { "name": "win-msvc-release", "configurePreset": "win-msvc-release" }
+  ],
+  "testPresets": [
+    { "name": "win-clang-debug", "configurePreset": "win-clang-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } }
+  ]
+}

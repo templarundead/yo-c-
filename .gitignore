@@ -1,0 +1,15 @@
+# Каталоги сборки и локальные артефакты
+build/
+build-*/
+out/
+.cache/
+compile_commands.json
+*.o
+*.obj
+*.pdb
+*.ilk
+CMakeUserPresets.json
+
+# Локальные копии крупных корпусов для бенчмарков
+/tmp-corpus/
+*.1gb.txt
