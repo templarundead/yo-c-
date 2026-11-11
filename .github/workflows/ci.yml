@@ -81,6 +81,13 @@ jobs:
         # журнал джобы скачать нельзя.
         run: |
           cmake --build --preset win-msvc-release 2>&1 | Tee-Object -FilePath build.log
+          # Предупреждения собираем сюда же: журнал джобы недоступен, а
+          # аннотации читаются через API. Уникальные строки, до 50 штук.
+          $warn = Get-Content build.log |
+            Select-String -Pattern 'warning C\d+|warning: ' |
+            ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique
+          Write-Host "::warning::предупреждений всего (уникальных): $($warn.Count)"
+          $warn | Select-Object -First 50 | ForEach-Object { Write-Host "::warning::$_" }
           if ($LASTEXITCODE -ne 0) {
             Get-Content build.log |
               Select-String -Pattern 'error C\d|error LNK\d|fatal error|undefined reference|ld returned|error:' |
@@ -131,6 +138,11 @@ jobs:
         shell: pwsh
         run: |
           cmake --build --preset win-clang-release 2>&1 | Tee-Object -FilePath build.log
+          $warn = Get-Content build.log |
+            Select-String -Pattern 'warning C\d+|warning: ' |
+            ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique
+          Write-Host "::warning::предупреждений всего (уникальных): $($warn.Count)"
+          $warn | Select-Object -First 50 | ForEach-Object { Write-Host "::warning::$_" }
           if ($LASTEXITCODE -ne 0) {
             Get-Content build.log |
               Select-String -Pattern 'error C\d|error LNK\d|fatal error|undefined reference|ld returned|error:' |
