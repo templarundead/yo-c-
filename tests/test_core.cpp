@@ -165,6 +165,37 @@ TEST_CASE("потоковое чтение сохраняет CRLF/LF/CR и BOM"
 	CHECK(eol == "\n");
 }
 
+TEST_CASE("запись строк: перевод строки в кодировке файла", "[codec]")
+{
+	// UTF-16: EOL пишется двухбайтовыми кодами, иначе в файле окажутся
+	// одиночные 0x0D/0x0A (баг, найденный на UTF-16LE-файле).
+	const UString line = u("ab");
+
+	std::ostringstream le;
+	LineWriter wle(le, Encoding::utf16le, false);
+	wle.write_line(line, "\r\n");
+	const std::string le_bytes = le.str();
+	REQUIRE(le_bytes.size() == 8u);
+	CHECK(static_cast<unsigned char>(le_bytes[4]) == 0x0D);
+	CHECK(static_cast<unsigned char>(le_bytes[5]) == 0x00);
+	CHECK(static_cast<unsigned char>(le_bytes[6]) == 0x0A);
+	CHECK(static_cast<unsigned char>(le_bytes[7]) == 0x00);
+
+	std::ostringstream be;
+	LineWriter wbe(be, Encoding::utf16be, false);
+	wbe.write_line(line, "\n");
+	const std::string be_bytes = be.str();
+	REQUIRE(be_bytes.size() == 6u);
+	CHECK(static_cast<unsigned char>(be_bytes[4]) == 0x00);
+	CHECK(static_cast<unsigned char>(be_bytes[5]) == 0x0A);
+
+	// Однобайтовые кодировки: EOL как есть.
+	std::ostringstream cp;
+	LineWriter wcp(cp, Encoding::cp1251, false);
+	wcp.write_line(line, "\r\n");
+	CHECK(cp.str() == std::string("ab\r\n"));
+}
+
 TEST_CASE("словарь yox.dat загружается без нарушений", "[dict]")
 {
 	std::vector<LoadIssue> issues;

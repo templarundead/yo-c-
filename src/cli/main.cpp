@@ -278,20 +278,47 @@ struct RunContext
 
 } // namespace
 
+// Параметры со значением: поддерживаются обе формы — `--name value`
+// и `--name=value` (последняя указана в --help).
+bool takes_value(std::string_view name)
+{
+	static constexpr std::string_view kNames[] = { "--dic",  "--regex",	 "--regex-log",
+												   "-o",	  "--out",	  "--out-dir",
+												   "--encoding", "--from", "--to" };
+	return std::ranges::find(kNames, name) != std::end(kNames);
+}
+
 int main(int argc, char** argv)
 {
 	CliOptions opts;
-	for (int i = 1; i < argc; ++i)
+	// --name=value разворачивается в два аргумента.
+	std::vector<std::string> normalized;
+	normalized.reserve(static_cast<std::size_t>(argc));
+	for (int i = 0; i < argc; ++i)
 	{
 		const std::string_view a = argv[i];
+		const auto eq = a.find('=');
+		if (i > 0 && eq != std::string_view::npos && a.starts_with("--") &&
+			takes_value(a.substr(0, eq)))
+		{
+			normalized.emplace_back(a.substr(0, eq));
+			normalized.emplace_back(a.substr(eq + 1));
+			continue;
+		}
+		normalized.emplace_back(a);
+	}
+	const int n_args = static_cast<int>(normalized.size());
+	for (int i = 1; i < n_args; ++i)
+	{
+		const std::string_view a = normalized[static_cast<std::size_t>(i)];
 		auto next_arg = [&](std::string_view name) -> std::optional<std::string_view>
 		{
-			if (i + 1 >= argc)
+			if (i + 1 >= n_args)
 			{
 				std::print(stderr, "yo-cli: параметр {} требует значения\n", name);
 				return std::nullopt;
 			}
-			return std::string_view(argv[++i]);
+			return std::string_view(normalized[static_cast<std::size_t>(++i)]);
 		};
 
 		if (a == "-h" || a == "--help")

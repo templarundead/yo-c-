@@ -488,6 +488,30 @@ void LineWriter::write_line(UStringView line, std::string_view eol)
 	write_bom_once();
 	const std::string bytes = encode_line(line, enc_);
 	out_.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+	// Перевод строки тоже пишется в целевой кодировке: для UTF-16 это
+	// двухбайтовые коды, иначе в файле получаются одиночные 0x0D/0x0A.
+	if (enc_ == Encoding::utf16le || enc_ == Encoding::utf16be)
+	{
+		char utf16_eol[8] = {};
+		std::size_t n = 0;
+		for (const char c : eol)
+		{
+			if (n + 2 > sizeof utf16_eol)
+				break;
+			if (enc_ == Encoding::utf16le)
+			{
+				utf16_eol[n++] = c;
+				utf16_eol[n++] = '\0';
+			}
+			else
+			{
+				utf16_eol[n++] = '\0';
+				utf16_eol[n++] = c;
+			}
+		}
+		out_.write(utf16_eol, static_cast<std::streamsize>(n));
+		return;
+	}
 	out_.write(eol.data(), static_cast<std::streamsize>(eol.size()));
 }
 
