@@ -4,6 +4,8 @@ add_library(yo_core STATIC
 	src/dict.cpp
 	src/regexdict.cpp
 	src/yofy.cpp
+	src/mapped.cpp
+	src/textbuf.cpp
 )
 add_library(yo::core ALIAS yo_core)
 

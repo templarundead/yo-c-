@@ -5,7 +5,9 @@
 #include "yo/codec.hpp"
 #include "yo/cp1251.hpp"
 #include "yo/dict.hpp"
+#include "yo/mapped.hpp"
 #include "yo/regexdict.hpp"
+#include "yo/textbuf.hpp"
 #include "yo/yofy.hpp"
 
 #include <benchmark/benchmark.h>
@@ -258,6 +260,127 @@ void bench_dict_load(benchmark::State& state)
 	}
 }
 
+
+// ---- Документное ядро GUI: mmap + piece table ----
+
+std::string make_text(std::size_t target_bytes)
+{
+	std::string s;
+	s.reserve(target_bytes + 64);
+	for (std::size_t i = 0; s.size() < target_bytes; ++i)
+	{
+		s += "Строка номер ";
+		s += std::to_string(i);
+		s += (i % 7 == 0) ? "\r\n" : "\n";
+	}
+	return s;
+}
+
+std::shared_ptr<yo::TextBuffer> textbuf_of(std::size_t target_bytes)
+{
+	static std::shared_ptr<yo::TextBuffer> buf = [target_bytes]
+	{
+		auto src = std::make_shared<MemorySource>(make_text(target_bytes));
+		return std::make_shared<TextBuffer>(src);
+	}();
+	return buf;
+}
+
+// Открытие текста: построение индекса начал строк по неизменяемому источнику.
+void bench_textbuf_load(benchmark::State& state, std::size_t target_bytes)
+{
+	const std::string text = make_text(target_bytes);
+	for ([[maybe_unused]] auto _ : state)
+	{
+		auto src = std::make_shared<MemorySource>(text);
+		TextBuffer buf(src);
+		benchmark::DoNotOptimize(buf.line_count());
+		state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(text.size()));
+		state.counters["lines"] = static_cast<double>(buf.line_count());
+	}
+}
+
+// Произвольный доступ к строке: поиск по индексу + сборка текста строки.
+void bench_textbuf_line(benchmark::State& state)
+{
+	const auto buf = textbuf_of(std::size_t{ 4 } << 20);
+	const std::size_t lines = buf->line_count();
+	std::size_t i = 0;
+	for ([[maybe_unused]] auto _ : state)
+	{
+		const std::size_t line = (i++ * 7919) % lines;
+		const std::string_view v = buf->line_text(line);
+		benchmark::DoNotOptimize(v.size());
+		state.SetBytesProcessed(state.iterations());
+	}
+}
+
+// Смещение -> номер строки (двоичный поиск по starts_).
+void bench_textbuf_line_of(benchmark::State& state)
+{
+	const auto buf = textbuf_of(std::size_t{ 4 } << 20);
+	const std::size_t total = buf->size();
+	std::size_t i = 0;
+	for ([[maybe_unused]] auto _ : state)
+	{
+		const std::size_t off = (i++ * 65521) % total;
+		benchmark::DoNotOptimize(buf->line_of(off));
+	}
+}
+
+// Правки: 1000 вставок в случайные места мегабайтного текста, затем отмена
+// и повтор всех правок.
+void bench_textbuf_edit(benchmark::State& state)
+{
+	const auto base = textbuf_of(std::size_t{ 1 } << 20);
+	const std::string base_text = base->text();
+	for ([[maybe_unused]] auto _ : state)
+	{
+		TextBuffer buf(std::make_shared<MemorySource>(base_text));
+		for (std::size_t i = 0; i < 1000; ++i)
+			buf.insert((i * 65537) % buf.size(), "слово ");
+		benchmark::DoNotOptimize(buf.line_count());
+		state.SetItemsProcessed(state.iterations() * 1000);
+	}
+}
+
+void bench_textbuf_undo(benchmark::State& state)
+{
+	const std::string text = make_text(std::size_t{ 1 } << 20);
+	TextBuffer buf(std::make_shared<MemorySource>(text));
+	for (std::size_t i = 0; i < 1000; ++i)
+		buf.insert((i * 65537) % buf.size(), "x");
+	for ([[maybe_unused]] auto _ : state)
+	{
+		while (buf.can_undo())
+			buf.undo();
+		while (buf.can_redo())
+			buf.redo();
+		benchmark::DoNotOptimize(buf.line_count());
+		state.SetItemsProcessed(state.iterations() * 2000);
+	}
+}
+
+// mmap: открытие файла без копирования + индекс строк.
+void bench_mapped_load(benchmark::State& state, std::size_t target_bytes)
+{
+	const auto path = std::filesystem::temp_directory_path() / "yo-bench-textbuf.txt";
+	if (!std::filesystem::exists(path) || std::filesystem::file_size(path) != target_bytes)
+	{
+		const std::string text = make_text(target_bytes);
+		std::ofstream out(path, std::ios::binary);
+		out.write(text.data(), static_cast<std::streamsize>(text.size()));
+	}
+	for ([[maybe_unused]] auto _ : state)
+	{
+		auto mapped = MappedFile::open(path.string());
+		TextBuffer buf(mapped);
+		benchmark::DoNotOptimize(buf.line_count());
+		state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(target_bytes));
+	}
+	std::filesystem::remove(path);
+}
+
 } // namespace
 
 BENCHMARK(bench_dict_load)->Unit(benchmark::kMillisecond);
@@ -271,5 +394,12 @@ BENCHMARK_CAPTURE(bench_yoficate, 1MB, std::size_t{ 1 } << 20)->Unit(benchmark::
 BENCHMARK_CAPTURE(bench_yoficate, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark::kMillisecond);
 	BENCHMARK_CAPTURE(bench_yoficate_no_regex, 1MB, std::size_t{ 1 } << 20)
 		->Unit(benchmark::kMillisecond);
+BENCHMARK_CAPTURE(bench_textbuf_load, 1MB, std::size_t{ 1 } << 20)->Unit(benchmark::kMillisecond);
+BENCHMARK_CAPTURE(bench_textbuf_load, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark::kMillisecond);
+BENCHMARK_CAPTURE(bench_mapped_load, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark::kMillisecond);
+BENCHMARK(bench_textbuf_line)->Unit(benchmark::kNanosecond);
+BENCHMARK(bench_textbuf_line_of)->Unit(benchmark::kNanosecond);
+BENCHMARK(bench_textbuf_edit)->Unit(benchmark::kMillisecond);
+BENCHMARK(bench_textbuf_undo)->Unit(benchmark::kMillisecond);
 
 BENCHMARK_MAIN();
