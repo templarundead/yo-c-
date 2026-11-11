@@ -1,5 +1,7 @@
 #include "yo/mapped.hpp"
 
+#include "yo/utf.hpp"
+
 #include <cerrno>
 #include <cstring>
 
@@ -21,8 +23,12 @@ namespace yo {
 
 std::shared_ptr<MappedFile> MappedFile::open(const std::string& path, std::string* err)
 {
-	HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-							  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	// Путь приходит в UTF-8 (как и всё в ядре); FILE_SHARE_DELETE нужен,
+	// чтобы файл можно было заменить (сохранить) поверх открытого отображения.
+	const std::wstring wide_path = utf8_to_wide(path);
+	HANDLE file = CreateFileW(wide_path.c_str(), GENERIC_READ,
+							  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+							  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (file == INVALID_HANDLE_VALUE)
 	{
 		if (err != nullptr)

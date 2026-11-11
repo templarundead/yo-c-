@@ -43,6 +43,31 @@ constexpr int kDefaultHeight = 720;
 
 std::wstring widen(std::string_view utf8) { return utf8_to_wide(utf8); }
 
+// Путь в UTF-8 для ядра (MappedFile ожидает именно UTF-8).
+std::string path_utf8(const std::filesystem::path& path) { return wide_to_utf8(path.wstring()); }
+
+// Масштаб DPI окна (per-monitor v2, с откатом на системный DPI).
+float query_dpi(HWND hwnd)
+{
+	using GetDpiFn = UINT(WINAPI*)(HWND);
+	if (HMODULE user32 = GetModuleHandleW(L"user32"))
+	{
+		const auto fn = reinterpret_cast<GetDpiFn>(
+			reinterpret_cast<void*>(GetProcAddress(user32, "GetDpiForWindow")));
+		if (fn != nullptr)
+		{
+			const UINT dpi = fn(hwnd);
+			if (dpi != 0)
+				return static_cast<float>(dpi) / 96.0F;
+		}
+	}
+	HDC dc = GetDC(hwnd);
+	const int dpi = dc != nullptr ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+	if (dc != nullptr)
+		ReleaseDC(hwnd, dc);
+	return static_cast<float>(dpi > 0 ? dpi : 96) / 96.0F;
+}
+
 // Доминирующий стиль перевода строки по первым строкам документа.
 Eol dominant_eol(const TextBuffer& buf)
 {
@@ -192,6 +217,7 @@ void App::on_create()
 	if (FAILED(DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark))))
 		DwmSetWindowAttribute(hwnd_, 19, &dark, sizeof(dark));
 
+	dpi_scale_ = query_dpi(hwnd_);
 	if (!renderer_.init(hwnd_, font_size_))
 		MessageBoxW(hwnd_, L"Не удалось инициализировать Direct2D/DirectWrite.", L"Ё", MB_ICONERROR);
 	renderer_.set_dpi(dpi_scale_);
@@ -461,10 +487,33 @@ void App::on_char(wchar_t ch)
 
 void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 {
-	if (show_find_ && vk == VK_ESCAPE)
+	if (show_find_)
 	{
-		find_toggle();
-		return;
+		if (vk == VK_ESCAPE)
+		{
+			find_toggle();
+			return;
+		}
+		if (vk == VK_RETURN)
+		{
+			find_next();
+			return;
+		}
+		if (vk == VK_BACK)
+		{
+			// Удаляем последний символ UTF-8 образца.
+			std::size_t cut = find_query_.size();
+			while (cut > 0 && (static_cast<unsigned char>(find_query_[cut - 1]) & 0xC0U) == 0x80U)
+				--cut;
+			if (cut > 0)
+				--cut;
+			find_query_.erase(cut);
+			invalidate();
+			return;
+		}
+		if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN || vk == VK_HOME ||
+			vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_DELETE)
+			return;
 	}
 	const bool extend = shift;
 	switch (vk)
@@ -520,7 +569,7 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 
 void App::on_lbutton_down(float x, float y, bool extend)
 {
-	const float padding = 6.0F * dpi_scale_;
+	const float padding = renderer_.padding();
 	const float doc_x = x - padding + ed_->scroll_x();
 	const float doc_y = y - ed_->scroll_y();
 	ed_->click_at(doc_x, doc_y, extend);
@@ -535,8 +584,7 @@ void App::on_mouse_move(float x, float y)
 {
 	if (!dragging_)
 		return;
-	const float padding = 6.0F * dpi_scale_;
-	ed_->click_at(x - padding + ed_->scroll_x(), y - ed_->scroll_y(), true);
+	ed_->click_at(x - renderer_.padding() + ed_->scroll_x(), y - ed_->scroll_y(), true);
 	update_scrollbars();
 	invalidate();
 }
@@ -851,7 +899,7 @@ bool App::load_from_path(const std::filesystem::path& path)
 	if (info.enc == Encoding::utf8 && !info.bom)
 	{
 		// Быстрый путь: UTF-8 без BOM отображается в память как есть.
-		auto mapped = MappedFile::open(path.string());
+		auto mapped = MappedFile::open(path_utf8(path));
 		if (!mapped)
 		{
 			MessageBoxW(hwnd_, L"Не удалось открыть файл.", L"Ё", MB_ICONERROR);

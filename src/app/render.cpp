@@ -200,8 +200,11 @@ bool Renderer::create_render_target(HWND hwnd)
 
 void Renderer::resize(UINT width_px, UINT height_px)
 {
+	const bool same = rt_ != nullptr && width_px == width_px_ && height_px == height_px_;
 	width_px_ = width_px;
 	height_px_ = height_px;
+	if (same)
+		return; // размер не менялся: Resize не нужен
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
 	rt_->Resize(D2D1::SizeU(std::max<UINT32>(1, width_px), std::max<UINT32>(1, height_px)));

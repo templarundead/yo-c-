@@ -50,6 +50,7 @@ public:
 	bool set_font_size(float size_dip, HWND hwnd);
 	[[nodiscard]] float font_size() const noexcept { return font_size_; }
 	[[nodiscard]] float char_width() const noexcept { return char_w_; }
+	[[nodiscard]] float padding() const noexcept { return padding_; }
 	[[nodiscard]] float line_height() const noexcept { return line_h_; }
 
 	// Высота нижней полосы (статус + строка поиска) в пикселях.
