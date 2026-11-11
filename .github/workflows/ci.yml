@@ -62,7 +62,11 @@ jobs:
           key: deps-windows-msvc-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
 
       - name: Настройка (MSVC Release + тесты)
-        run: cmake --preset win-msvc-release -DYO_BUILD_TESTS=ON
+        # /WX для MSVC пока снят: набор /W4 у MSVC иной, чем clang-овый
+        # -Wconversion/-Wold-style-cast, под который вылизан код, и MSVC этот
+        # код ещё ни разу не собирал. Включать обратно — после триажа
+        # предупреждений, чтобы не блокировать PR посторонними C4267/C4244.
+        run: cmake --preset win-msvc-release -DYO_BUILD_TESTS=ON -DYO_WARNINGS_AS_ERRORS=OFF
 
       - name: Сборка
         run: cmake --build --preset win-msvc-release
@@ -87,7 +91,10 @@ jobs:
           arch: x64
 
       - name: Настройка
-        run: cmake --preset win-clang-release
+        # clang-cl идёт в MSVC-режиме и получает /W4 вместо clang-овых
+        # -Wconversion/-Wold-style-cast: этот профиль предупреждений в проекте
+        # ещё не выверен, поэтому сборка артефактов идёт без /WX.
+        run: cmake --preset win-clang-release -DYO_WARNINGS_AS_ERRORS=OFF
 
       - name: Сборка GUI и CLI
         run: cmake --build --preset win-clang-release
