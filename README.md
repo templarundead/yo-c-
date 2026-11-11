@@ -113,6 +113,22 @@ cmake --build build -j
 ./build/bench/yo_bench --benchmark_min_time=0.3s   # бенчмарки
 ```
 
+Куда попадают бинарники (пути повторяют дерево `src/`, не корень сборки):
+
+| Цель | Путь |
+|---|---|
+| `yo_tests` | `build/tests/yo_tests` |
+| `yo-cli` | `build/src/cli/yo-cli` |
+| `yo-regex-probe` | `build/src/cli/yo-regex-probe` |
+| `yo_bench` | `build/bench/yo_bench` (только с `-DYO_BUILD_BENCH=ON`) |
+| `yo-gui.exe` | `build/src/app/yo-gui.exe` (только Windows, `-DYO_BUILD_GUI=ON`) |
+
+`yo-cli` использует `std::print`/`std::println` из C++23 (`<print>`): нужен
+libstdc++ ≥ 14, libc++ ≥ 18 (проще всего собрать драйвером zig) или MSVC STL
+17.10+. На Debian 12 штатный libstdc++ 12 такого заголовка не имеет — clang
+соберёт ядро и тесты, а `yo-cli` останется «несобранным», и CMake выдаст
+предупреждение при конфигурации.
+
 Офлайн-сборка: `-DFETCHCONTENT_SOURCE_DIR_RE2=...` и т.п. (см.
 cmake/Dependencies.cmake).
 
