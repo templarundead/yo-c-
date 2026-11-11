@@ -7,6 +7,7 @@
 #include "yo/yofy.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -33,12 +34,19 @@ struct YofyResult
 	std::size_t replaced = 0;	// сколько символов е<->ё заменено
 	std::size_t lines = 0;		// сколько строк обработано
 	std::size_t asked = 0;		// сколько раз движок спрашивал
-	bool cancelled = false;		// обработка прервана
+	bool cancelled = false;		// обработка прервана пользователем
+	bool rolled_back = false;	// пользователь выбрал «Откат»: изменений нет
 	bool changed = false;		// текст документа изменился
 };
 
+// Строка, к которой перешёл проход (для подсветки/прокрутки в GUI).
+// Вызывается перед разбором каждой строки, до возможных вопросов движка.
+using YofyLineFn = std::function<void(std::size_t line)>;
+
 // Ёфицировать строки, пересекающие [from, to), одной группой undo.
 // Ответы на вопросы движка задаются через Yoficator::set_ask у вызывающего.
-YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy);
+// Если пользователь выбрал «Откат», документ не меняется вовсе.
+YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
+						const YofyLineFn& on_line = {});
 
 } // namespace yo

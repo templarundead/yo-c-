@@ -35,6 +35,7 @@ constexpr int kCmdSelectAll = 1015;
 constexpr int kCmdFind = 1016;
 constexpr int kCmdFindNext = 1017;
 constexpr int kCmdYofify = 1030;
+constexpr int kCmdAlwaysAsk = 1031;
 constexpr int kCmdFontBigger = 1020;
 constexpr int kCmdFontSmaller = 1021;
 
@@ -265,6 +266,8 @@ void App::setup_menu()
 
 	const HMENU yofy = CreatePopupMenu();
 	AppendMenuW(yofy, MF_STRING, kCmdYofify, L"&Ёфицировать\tCtrl+E");
+	AppendMenuW(yofy, MF_SEPARATOR, 0, nullptr);
+	AppendMenuW(yofy, MF_STRING, kCmdAlwaysAsk, L"Спрашивать про &все слова");
 	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(yofy), L"&Ёфикация");
 
 	const HMENU view = CreatePopupMenu();
@@ -378,12 +381,16 @@ std::wstring App::status_text() const
 	text += format_size(buf_->size());
 	if (readonly_)
 		text += L"   [только чтение]";
-	if (last_yofy_.lines > 0)
+	if (last_yofy_.rolled_back)
+		text += L"   ёфикация: откат, изменений нет";
+	else if (last_yofy_.lines > 0)
 	{
 		text += L"   ёфикация: замен ";
 		text += std::to_wstring(last_yofy_.replaced);
 		text += L", строк ";
 		text += std::to_wstring(last_yofy_.lines);
+		if (last_yofy_.cancelled)
+			text += L" (прервано)";
 	}
 	if (show_find_ && find_query_.empty())
 		text += L"   введите образец, Enter — найти, Esc — закрыть";
@@ -400,7 +407,9 @@ void App::on_paint()
 	GetClientRect(hwnd_, &rc);
 	renderer_.resize(static_cast<UINT>(std::max<LONG>(1, rc.right)), static_cast<UINT>(std::max<LONG>(1, rc.bottom)));
 	sync_metrics();
-	renderer_.paint(*ed_, status_text(), show_find_, widen(find_query_), true, caret_on_);
+	const AskView view = ask_view();
+	renderer_.paint(*ed_, status_text(), show_find_, widen(find_query_), true, caret_on_,
+					ask_.active && ask_.has_panel ? &view : nullptr);
 	// Рендер мог подкрутить вид, чтобы курсор остался в окне.
 	update_scrollbars();
 	EndPaint(hwnd_, &ps);
@@ -742,6 +751,9 @@ void App::on_command(int id)
 	case kCmdYofify:
 		run_yofification();
 		break;
+	case kCmdAlwaysAsk:
+		set_always_ask(!always_ask_);
+		break;
 	case kCmdFontBigger:
 		if (renderer_.set_font_size(font_size_ + 1.0F, hwnd_))
 		{
@@ -945,10 +957,11 @@ bool App::ensure_yoficator()
 
 	Options opts;
 	opts.mark = true;
+	opts.always_ask = always_ask_;
 	yofy_ = std::make_unique<Yoficator>(*dict_, regexdict_.get(), opts);
-	// Панель вопросов (AskPanel) — этап 4; пока все вопросы решаются «Ё»
-	// (как кнопка «Всегда Ё» в оригинале).
-	yofy_->set_ask([](const AskRequest&) { return AskAnswer::yo; });
+	// Неоднозначные слова — в панель вопросов (как AskPanel оригинала).
+	yofy_->set_ask([this](const AskRequest& req) { return ask_word(req); });
+	set_always_ask(always_ask_);
 	return true;
 }
 
@@ -968,8 +981,11 @@ void App::run_yofification()
 		return;
 
 	SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+	sync_metrics();
 	yofy_->stats().reset();
-	last_yofy_ = yofify_range(*buf_, from, to, *yofy_);
+	ask_.line = buf_->line_of(from);
+	last_yofy_ = yofify_range(*buf_, from, to, *yofy_,
+							  [this](std::size_t line) { ask_.line = line; });
 	SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
 
 	if (last_yofy_.changed)
@@ -979,6 +995,248 @@ void App::run_yofification()
 		update_title();
 	}
 	invalidate();
+}
+
+// ---------------------------------------------------------------- панель вопросов
+
+void App::set_always_ask(bool on)
+{
+	always_ask_ = on;
+	if (const HMENU menu = GetMenu(hwnd_))
+		CheckMenuItem(menu, static_cast<UINT>(kCmdAlwaysAsk), MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+	if (yofy_)
+	{
+		Options opts = yofy_->options();
+		opts.always_ask = on;
+		yofy_->set_options(opts);
+	}
+}
+
+void App::ask_build_view()
+{
+	ask_.rows.clear();
+	ask_.buttons.clear();
+	ask_.has_panel = false;
+
+	RECT rc{};
+	GetClientRect(hwnd_, &rc);
+
+	const AskTexts texts = make_ask_texts(ask_.req);
+	AskLayoutInput in;
+	in.client_w = static_cast<float>(std::max<LONG>(1, rc.right));
+	in.client_h = static_cast<float>(std::max<LONG>(1, rc.bottom));
+	in.status_h = renderer_.status_height();
+	in.padding = renderer_.padding();
+	in.line_height = renderer_.line_height();
+	in.char_width = renderer_.char_width();
+	in.variants = texts.variants;
+	in.reason = texts.reason;
+
+	std::string context = "стр. " + std::to_string(ask_.line + 1) + ": ";
+	if (ask_.line < buf_->line_count())
+	{
+		const std::string_view bytes = buf_->line_text(ask_.line);
+		std::size_t begin = 0;
+		while (begin < bytes.size() && bytes[begin] == '\t')
+			++begin;
+		std::size_t end = bytes.size();
+		while (end > begin && (bytes[end - 1] == '\r' || bytes[end - 1] == '\n'))
+			--end;
+		context += std::string(bytes.substr(begin, end - begin));
+	}
+	in.context = std::move(context);
+
+	// Ширину строк меряет тот же шрифт, которым рисуем панель.
+	const AskLayout layout = layout_ask_panel(
+		in, [this](std::string_view text) { return renderer_.measure_ui(widen(text)); });
+	if (!layout.visible)
+		return;
+
+	const float pad = std::max(2.0F, renderer_.padding());
+	const float left = layout.x + pad;
+	const float right = layout.x + layout.w - pad;
+	for (std::size_t i = 0; i < layout.rows.size(); ++i)
+	{
+		AskRow row;
+		row.text = widen(layout.rows[i].text);
+		row.kind = i == 0 ? AskKind::normal : (i == 1 ? AskKind::accent : AskKind::dim);
+		row.rect = D2D1::RectF(left, layout.rows[i].y, right, layout.rows[i].y + layout.rows[i].h);
+		ask_.rows.push_back(std::move(row));
+	}
+
+	for (const AskButtonBox& box : layout.buttons)
+	{
+		AskButton button;
+		button.label = widen(box.label);
+		button.answer = to_answer(box.choice);
+		button.rect.left = static_cast<LONG>(box.x);
+		button.rect.top = static_cast<LONG>(box.y);
+		button.rect.right = static_cast<LONG>(box.x + box.w);
+		button.rect.bottom = static_cast<LONG>(box.y + box.h);
+		ask_.buttons.push_back(std::move(button));
+	}
+
+	ask_.panel.left = static_cast<LONG>(layout.x);
+	ask_.panel.top = static_cast<LONG>(layout.y);
+	ask_.panel.right = static_cast<LONG>(layout.x + layout.w);
+	ask_.panel.bottom = static_cast<LONG>(layout.y + layout.h);
+	ask_.has_panel = true;
+}
+
+AskView App::ask_view() const
+{
+	AskView view;
+	if (!ask_.has_panel)
+		return view;
+	view.panel = D2D1::RectF(static_cast<float>(ask_.panel.left), static_cast<float>(ask_.panel.top),
+							static_cast<float>(ask_.panel.right), static_cast<float>(ask_.panel.bottom));
+	view.rows = ask_.rows;
+	view.buttons.reserve(ask_.buttons.size());
+	for (const AskButton& b : ask_.buttons)
+	{
+		AskButtonView v;
+		v.rect = D2D1::RectF(static_cast<float>(b.rect.left), static_cast<float>(b.rect.top),
+							static_cast<float>(b.rect.right), static_cast<float>(b.rect.bottom));
+		v.label = b.label;
+		v.focus = static_cast<std::ptrdiff_t>(&b - ask_.buttons.data()) == ask_.focus;
+		view.buttons.push_back(std::move(v));
+	}
+	return view;
+}
+
+void App::scroll_line_into_view(std::size_t line)
+{
+	if (!ed_)
+		return;
+	const auto first = static_cast<long long>(ed_->first_visible_line());
+	const auto count = std::max<long long>(1, static_cast<long long>(ed_->visible_line_count()));
+	const auto target = static_cast<long long>(line);
+	if (target < first)
+		ed_->scroll_lines(static_cast<long>(target - first));
+	else if (target >= first + count)
+		ed_->scroll_lines(static_cast<long>(target - (first + count) + 1));
+}
+
+AskAnswer App::ask_word(const AskRequest& req)
+{
+	if (quitting_)
+		return AskAnswer::cancel;
+	ask_.req = req;
+	ask_.answered = false;
+	ask_.answer = AskAnswer::cancel;
+	ask_build_view();
+	{
+		const int ye = ask_.index_of(AskAnswer::ye);
+		const int yo = ask_.index_of(AskAnswer::yo);
+		ask_.focus = (req.focus_first || req.word2.empty()) ? std::max(ye, 0) : std::max(yo, 0);
+	}
+	scroll_line_into_view(ask_.line);
+	ask_.active = true;
+	SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+	invalidate();
+	UpdateWindow(hwnd_);
+
+	// Модальный цикл: панель живёт поверх документа, движок ждёт ответа.
+	MSG msg{};
+	while (!ask_.answered)
+	{
+		const BOOL got = GetMessageW(&msg, nullptr, 0, 0);
+		if (got == 0)
+		{
+			// Приложение закрывается: не задаём больше вопросов.
+			quitting_ = true;
+			PostQuitMessage(static_cast<int>(msg.wParam));
+			ask_.answer = AskAnswer::cancel;
+			break;
+		}
+		if (got == -1)
+			break;
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
+
+	ask_.active = false;
+	ask_.has_panel = false;
+	ask_.answered = false;
+	SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+	invalidate();
+	return ask_.answer;
+}
+
+void App::ask_answer(AskAnswer answer)
+{
+	if (!ask_.active || ask_.answered)
+		return;
+	ask_.answer = answer;
+	ask_.answered = true;
+	invalidate();
+}
+
+void App::ask_move_focus(int delta)
+{
+	const auto count = static_cast<int>(ask_.buttons.size());
+	if (count <= 0)
+		return;
+	int next = ask_.focus + delta;
+	next %= count;
+	if (next < 0)
+		next += count;
+	ask_.focus = next;
+	invalidate();
+}
+
+void App::ask_key(WPARAM vk, bool ctrl)
+{
+	(void)ctrl;
+	if (!ask_.active)
+		return;
+	switch (vk)
+	{
+	case VK_ESCAPE:
+		ask_answer(AskAnswer::cancel);
+		break;
+	case VK_LEFT:
+	case VK_UP:
+		ask_move_focus(-1);
+		break;
+	case VK_RIGHT:
+	case VK_DOWN:
+	case VK_TAB:
+		ask_move_focus(GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
+		break;
+	default:
+		break;
+	}
+}
+
+void App::ask_char(wchar_t ch)
+{
+	if (!ask_.active)
+		return;
+	if (ch >= L'1' && ch <= L'9')
+	{
+		const auto index = static_cast<std::size_t>(ch - L'1');
+		if (index < ask_.buttons.size())
+			ask_answer(ask_.buttons[index].answer);
+		return;
+	}
+	if (ch == L'\r' || ch == L'\n')
+		ask_answer(ask_.buttons.at(static_cast<std::size_t>(ask_.focus)).answer);
+}
+
+void App::ask_click(float x, float y)
+{
+	if (!ask_.active)
+		return;
+	for (const AskButton& b : ask_.buttons)
+	{
+		if (x >= static_cast<float>(b.rect.left) && x < static_cast<float>(b.rect.right) &&
+			y >= static_cast<float>(b.rect.top) && y < static_cast<float>(b.rect.bottom))
+		{
+			ask_answer(b.answer);
+			return;
+		}
+	}
 }
 
 // ---------------------------------------------------------------- файлы
@@ -1182,6 +1440,36 @@ void App::on_drop(HDROP drop)
 
 LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+	// Пока панель вопросов ждёт ответа, ввод и команды идут только ей.
+	if (ask_.active)
+	{
+		switch (msg)
+		{
+		case WM_CHAR:
+			ask_char(static_cast<wchar_t>(wp));
+			return 0;
+		case WM_KEYDOWN:
+			ask_key(wp, GetKeyState(VK_CONTROL) < 0);
+			return 0;
+		case WM_LBUTTONDOWN:
+			ask_click(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));
+			return 0;
+		case WM_LBUTTONUP:
+		case WM_MOUSEMOVE:
+		case WM_LBUTTONDBLCLK:
+		case WM_MOUSEWHEEL:
+		case WM_DROPFILES:
+		case WM_COMMAND:
+		case WM_SYSCOMMAND:
+			return 0;
+		case WM_CLOSE:
+			ask_answer(AskAnswer::cancel);
+			return 0;
+		default:
+			break;
+		}
+	}
+
 	switch (msg)
 	{
 	case WM_CREATE:

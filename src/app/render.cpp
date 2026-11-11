@@ -275,8 +275,59 @@ void Renderer::draw_find_bar(const std::wstring& text, bool focus)
 				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
+float Renderer::measure_ui(const std::wstring& text)
+{
+	if (dwrite_ == nullptr || fmt_ui_ == nullptr || text.empty())
+		return 0.0F;
+	IDWriteTextLayout* layout = nullptr;
+	if (FAILED(dwrite_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt_ui_,
+										 4096.0F, line_h_, &layout)) ||
+		layout == nullptr)
+		return 0.0F;
+	DWRITE_TEXT_METRICS m{};
+	const float width = SUCCEEDED(layout->GetMetrics(&m)) ? m.widthIncludingTrailingWhitespace : 0.0F;
+	layout->Release();
+	return width;
+}
+
+void Renderer::draw_ask(const AskView& view)
+{
+	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
+		return;
+
+	brush_->SetColor(theme_.gutter);
+	rt_->FillRectangle(view.panel, brush_);
+	brush_->SetColor(theme_.accent);
+	rt_->DrawRectangle(view.panel, brush_, 1.0F);
+
+	for (const AskRow& row : view.rows)
+	{
+		if (row.text.empty())
+			continue;
+		brush_->SetColor(row.kind == AskKind::accent   ? theme_.accent
+						 : row.kind == AskKind::dim ? theme_.status_fg
+													: theme_.text);
+		rt_->DrawTextW(row.text.c_str(), static_cast<UINT32>(row.text.size()), fmt_ui_, row.rect,
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+
+	for (const AskButtonView& b : view.buttons)
+	{
+		brush_->SetColor(b.focus ? theme_.selection : theme_.status_bg);
+		rt_->FillRectangle(b.rect, brush_);
+		brush_->SetColor(b.focus ? theme_.accent : theme_.status_fg);
+		rt_->DrawRectangle(b.rect, brush_, 1.0F);
+		brush_->SetColor(b.focus ? theme_.text : theme_.status_fg);
+		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_ui_,
+					   D2D1::RectF(b.rect.left + padding_ * 0.5F, b.rect.top,
+								   b.rect.right - padding_ * 0.5F, b.rect.bottom),
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+}
+
 void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
-					 const std::wstring& find_text, bool find_focus, bool caret)
+					 const std::wstring& find_text, bool find_focus, bool caret,
+					 const AskView* ask)
 {
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
@@ -439,6 +490,8 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	if (show_find_bar)
 		draw_find_bar(find_text, find_focus);
 	draw_status(status);
+	if (ask != nullptr)
+		draw_ask(*ask);
 
 	const HRESULT hr = rt_->EndDraw();
 	if (hr == D2DERR_RECREATE_TARGET)

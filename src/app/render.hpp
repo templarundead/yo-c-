@@ -19,6 +19,37 @@
 
 namespace yo::gui {
 
+// Панель вопросов ёфикации: строки текста и кнопки в клиентских пикселях.
+// Геометрию считает App (ей же нужны прямоугольники для попадания мышью),
+// Renderer только рисует — так раскладка кнопок живёт в одном месте.
+enum class AskKind
+{
+	normal, // основной текст (варианты написания)
+	accent, // причина вопроса
+	dim,	// строка контекста из документа
+};
+
+struct AskRow
+{
+	D2D1_RECT_F rect{};
+	std::wstring text;
+	AskKind kind = AskKind::normal;
+};
+
+struct AskButtonView
+{
+	D2D1_RECT_F rect{};
+	std::wstring label;
+	bool focus = false;
+};
+
+struct AskView
+{
+	D2D1_RECT_F panel{};
+	std::vector<AskRow> rows;
+	std::vector<AskButtonView> buttons;
+};
+
 struct Theme
 {
 	D2D1_COLOR_F bg = D2D1::ColorF(0.086F, 0.090F, 0.102F);
@@ -57,9 +88,14 @@ public:
 	[[nodiscard]] float status_height() const noexcept;
 	[[nodiscard]] float find_height() const noexcept;
 
-	// Полная перерисовка. `caret` — рисовать ли курсор (мигание).
+	// Ширина строки шрифтом интерфейса (Segoe UI) в пикселях — для кнопок.
+	[[nodiscard]] float measure_ui(const std::wstring& text);
+
+	// Полная перерисовка. `caret` — рисовать ли курсор (мигание),
+	// `ask` — панель вопросов ёфикации поверх текста.
 	void paint(Editor& ed, const std::wstring& status, bool show_find_bar,
-			   const std::wstring& find_text, bool find_focus, bool caret);
+			   const std::wstring& find_text, bool find_focus, bool caret,
+			   const AskView* ask = nullptr);
 
 	[[nodiscard]] float text_area_width() const noexcept;
 	[[nodiscard]] float text_area_height() const noexcept;
@@ -70,6 +106,7 @@ private:
 	bool create_render_target(HWND hwnd);
 	void draw_status(const std::wstring& status);
 	void draw_find_bar(const std::wstring& text, bool focus);
+	void draw_ask(const AskView& view);
 
 	HWND hwnd_ = nullptr;
 	ID2D1Factory* factory_ = nullptr;

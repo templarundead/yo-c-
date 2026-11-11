@@ -50,6 +50,8 @@ struct Engine
 	}
 };
 
+std::string encode_utf8(const UString& s) { return encode_line(s, Encoding::utf8); }
+
 std::shared_ptr<TextBuffer> tb(std::string text)
 {
 	return std::make_shared<TextBuffer>(std::make_shared<MemorySource>(std::move(text)));
@@ -111,6 +113,102 @@ TEST_CASE("ёфикация: нечего менять — буфер не ме�
 	CHECK(buf->text() == before);
 	CHECK_FALSE(buf->modified());
 	CHECK_FALSE(buf->can_undo());
+}
+
+TEST_CASE("ёфикация: вопросы движка и ответы пользователя", "[yofytext]")
+{
+	Engine e;
+	// always_ask — как «всегда спрашивать» в оригинале: спрашиваем про каждое
+	// слово, у которого есть вариант с ё.
+	Options opts;
+	opts.always_ask = true;
+	e.yofy.set_options(opts);
+
+	auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435\n");
+	std::vector<std::string> asked_words;
+	e.yofy.set_ask([&](const AskRequest& req) {
+		asked_words.push_back(encode_utf8(req.word1));
+		// Первое слово — «Е», второе — «Ё».
+		return asked_words.size() == 1 ? AskAnswer::ye : AskAnswer::yo;
+	});
+
+	const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+	CHECK(r.asked == 2);
+	CHECK(asked_words.size() == 2);
+	CHECK(r.changed);
+	CHECK(buf->text() == "\u0432\u0441\u0435 \u0435\u0449\u0451\n");
+}
+
+TEST_CASE("ёфикация: «Откат» не меняет документ, «Прервать» сохраняет сделанное", "[yofytext]")
+{
+	Engine e;
+	Options opts;
+	opts.always_ask = true;
+	e.yofy.set_options(opts);
+
+	SECTION("откат на втором вопросе")
+	{
+		auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435\n");
+		const std::string before = buf->text();
+		std::size_t n = 0;
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 2 ? AskAnswer::undo : AskAnswer::yo; });
+		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+		CHECK(r.rolled_back);
+		CHECK_FALSE(r.cancelled);
+		CHECK_FALSE(r.changed);
+		CHECK(buf->text() == before);
+		CHECK_FALSE(buf->can_undo());
+	}
+
+	SECTION("прервать на второй строке")
+	{
+		auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435\n\u0432\u0441\u0435 \u0435\u0449\u0435\n");
+		std::size_t n = 0;
+		e.yofy.set_ask([&](const AskRequest&) {
+			++n;
+			if (n <= 2)
+				return AskAnswer::yo;
+			return AskAnswer::cancel;
+		});
+		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+		CHECK(r.cancelled);
+		CHECK_FALSE(r.rolled_back);
+		CHECK(r.changed);
+		// Первая строка ёфицирована целиком, вторая прервана на первом слове.
+		CHECK(buf->line_count() == 3);
+		const std::string first = std::string(buf->line_text(0));
+		CHECK(first == "\u0432\u0441\u0451 \u0435\u0449\u0451");
+	}
+}
+
+TEST_CASE("ёфикация: «Пропустить» не меняет слово, проход продолжается", "[yofytext]")
+{
+	Engine e;
+	Options opts;
+	opts.always_ask = true;
+	e.yofy.set_options(opts);
+
+	auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435\n");
+	std::size_t n = 0;
+	e.yofy.set_ask([&](const AskRequest&) { return ++n == 1 ? AskAnswer::skip : AskAnswer::yo; });
+	const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+	CHECK_FALSE(r.cancelled);
+	CHECK(r.changed);
+	CHECK(buf->text() == "\u0432\u0441\u0435 \u0435\u0449\u0451\n");
+}
+
+TEST_CASE("ёфикация: on_line вызывается по строкам по порядку", "[yofytext]")
+{
+	Engine e;
+	auto buf = tb("a\nb\nc\nd\n");
+	std::vector<std::size_t> lines;
+	yofify_range(*buf, 0, buf->size(), e.yofy, [&](std::size_t line) { lines.push_back(line); });
+	CHECK(lines == std::vector<std::size_t>{ 0, 1, 2, 3 });
+
+	lines.clear();
+	yofify_range(*buf, buf->line_start(2), buf->size(), e.yofy,
+				 [&](std::size_t line) { lines.push_back(line); });
+	CHECK(lines == std::vector<std::size_t>{ 2, 3 });
 }
 
 TEST_CASE("ёфикация: пустой документ и пустой диапазон", "[yofytext]")

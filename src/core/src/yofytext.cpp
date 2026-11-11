@@ -22,7 +22,8 @@ const UString* BufferLineSource::line(std::size_t index) const
 	return &it->second;
 }
 
-YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy)
+YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
+						const YofyLineFn& on_line)
 {
 	YofyResult result;
 	if (buf.size() == 0 || from >= to)
@@ -42,6 +43,8 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 	std::size_t done = 0;
 	for (std::size_t i = first; i <= last && i < buf.line_count(); ++i)
 	{
+		if (on_line)
+			on_line(i);
 		const std::string_view bytes = buf.line_text(i);
 		const UString before = decode_line({ reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size() },
 										   Encoding::utf8);
@@ -64,12 +67,16 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 		}
 		if (!ok)
 		{
-			result.cancelled = true;
+			// «Откат» отменяет весь проход, «Прервать» оставляет сделанное.
+			result.rolled_back = yofy.undo_requested();
+			result.cancelled = !result.rolled_back;
 			break;
 		}
 	}
 
 	result.asked = yofy.stats().ask_prompts;
+	if (result.rolled_back)
+		return result;
 	if (!any_change || changed_lines == 0 || done == 0)
 		return result;
 

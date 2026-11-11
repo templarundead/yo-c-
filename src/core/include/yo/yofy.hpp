@@ -116,6 +116,10 @@ public:
 	bool process_line(UString& text, std::size_t line_no, const LineSource& source,
 					  std::vector<Change>* changes);
 
+	// Пользователь выбрал «Откат» на последнем вопросе: вызывающий должен
+	// отменить все изменения этого прохода.
+	[[nodiscard]] bool undo_requested() const noexcept { return to_make_undo_; }
+
 	[[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 	[[nodiscard]] Stats& stats() noexcept { return stats_; }
 	[[nodiscard]] const Options& options() const noexcept { return opts_; }
