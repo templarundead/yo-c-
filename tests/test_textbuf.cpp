@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdio>
+#include <fstream>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -299,10 +300,10 @@ TEST_CASE("mmap: файл отображается без копирования
 	const auto path = dir / "sample.txt";
 	const std::string content = "Первая строка\r\nВторая строка\n";
 	{
-		std::FILE* f = std::fopen(path.string().c_str(), "wb");
-		REQUIRE(f != nullptr);
-		std::fwrite(content.data(), 1, content.size(), f);
-		std::fclose(f);
+		std::ofstream f(path, std::ios::binary);
+		REQUIRE(f);
+		f.write(content.data(), static_cast<std::streamsize>(content.size()));
+		REQUIRE(f.good());
 	}
 
 	std::string err;

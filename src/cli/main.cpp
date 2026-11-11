@@ -5,6 +5,7 @@
 // неоднозначности (политика skip/fail), 3 — прервано пользователем.
 
 #include "yo/codec.hpp"
+#include "yo/env.hpp"
 #include "yo/cp1251.hpp"
 #include "yo/dict.hpp"
 #include "yo/regexdict.hpp"
@@ -231,9 +232,8 @@ void print_json(std::FILE* to, const Totals& t)
 
 [[nodiscard]] std::string default_dic_path()
 {
-	const char* env = std::getenv("YO_DIC");
-	if (env != nullptr && *env != '\0')
-		return env;
+	if (const auto env = env_var("YO_DIC"))
+		return *env;
 	if (fs::exists("yox.dat"))
 		return "yox.dat";
 	return {};
@@ -510,11 +510,11 @@ int main(int argc, char** argv)
 		return kExitError;
 	}
 
-	std::FILE* log_file = nullptr;
+	std::ofstream log_file;
 	if (opts.regex_log)
 	{
-		log_file = std::fopen(opts.regex_log->string().c_str(), "wb");
-		if (log_file == nullptr)
+		log_file.open(*opts.regex_log, std::ios::binary);
+		if (!log_file)
 		{
 			std::print(stderr, "yo-cli: не удалось открыть журнал {}\n",
 					   opts.regex_log->string());
@@ -646,11 +646,11 @@ int main(int argc, char** argv)
 				});
 		}
 
-		if (log_file != nullptr)
+		if (log_file)
 			yofy.set_regex_log([&](std::string_view line)
 							   {
-								   std::fwrite(line.data(), 1, line.size(), log_file);
-								   std::fputc('\n', log_file);
+								   log_file.write(line.data(), static_cast<std::streamsize>(line.size()));
+								   log_file.put('\n');
 							   });
 
 		StreamSource source(reader);
@@ -712,8 +712,8 @@ int main(int argc, char** argv)
 		}
 	}
 
-	if (log_file != nullptr)
-		std::fclose(log_file);
+	if (log_file)
+		log_file.close();
 
 	if (opts.stats && !opts.quiet)
 	{
