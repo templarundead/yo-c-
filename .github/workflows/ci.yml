@@ -90,7 +90,17 @@ jobs:
           }
 
       - name: Тесты
-        run: ctest --test-dir build/win-msvc-release --output-on-failure
+        shell: pwsh
+        run: |
+          ctest --test-dir build/win-msvc-release --output-on-failure 2>&1 |
+            Tee-Object -FilePath tests.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content tests.log |
+              Select-String -Pattern 'FAILED|with expansion|REQUIRE\(|CHECK\(|Test #.*Failed' |
+              Select-Object -First 20 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
   windows-clang-cl:
     name: Windows / clang-cl, артефакты
