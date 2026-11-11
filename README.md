@@ -95,6 +95,12 @@ cmake --build --preset win-clang-debug
 ctest --preset win-clang-debug
 ```
 
+Компилятор: **clang ≥ 21** (в том числе clang из zig 0.15+) — под него
+настроены предупреждения (`-Wconversion -Wsign-conversion -Wold-style-cast`)
+и на нём идут CI и замеры; **MSVC 19.4x** — для Windows-поставки
+(`win-msvc-release`). GCC не проверялся: CLI требует `<print>` из C++23
+(GCC ≥ 14), а набор предупреждений проекта рассчитан на clang.
+
 Ядро и CLI собираются и на Linux (zig-clang / clang++ ≥ 21) — так
 идут CI и замеры:
 

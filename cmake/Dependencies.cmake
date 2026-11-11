@@ -28,7 +28,9 @@ if(YO_BUILD_BENCH)
 	include_directories(SYSTEM "${googlebenchmark_SOURCE_DIR}/include")
 	# Google Benchmark 1.9.1 включает -pedantic-errors, а свежие clang
 	# считают __COUNTER__ расширением C2y — гасим этот диагностик.
-	if(TARGET benchmark AND NOT MSVC)
+	# __COUNTER__ в заголовках Google Benchmark — «расширение C2y» только
+	# для clang 21+; у GCC такого предупреждения нет (и нет флага).
+	if(TARGET benchmark AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 		target_compile_options(benchmark PRIVATE -Wno-c2y-extensions)
 	endif()
 endif()

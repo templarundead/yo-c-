@@ -21,7 +21,9 @@ set_target_properties(yo_tests PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED 
 
 # Макросы Catch2 (TEST_CASE) используют __COUNTER__ — в clang 21 это
 # «расширение C2y», и с -Werror оно становится ошибкой сборки тестов.
-if(NOT MSVC)
+# Флаг понимает только clang: GCC на незнакомый -Wno-error=... ругается
+# («no option -Wc2y-extensions»), поэтому добавляем его лишь для Clang.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 	target_compile_options(yo_tests PRIVATE -Wno-error=c2y-extensions)
 endif()
 
