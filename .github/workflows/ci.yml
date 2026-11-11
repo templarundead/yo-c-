@@ -20,7 +20,7 @@ jobs:
     name: Linux / clang 20, ASan+UBSan
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: LLVM 20 и ninja
         run: |
@@ -54,7 +54,7 @@ jobs:
     name: Windows / MSVC, тесты
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/cache@v4
         with:
@@ -74,7 +74,7 @@ jobs:
     name: Windows / clang-cl, артефакты
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/cache@v4
         with:
@@ -113,7 +113,7 @@ jobs:
     name: Windows / кросс-сборка (zig, без Windows-SDK)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: zig и ninja
         run: pip install --break-system-packages ziglang ninja
