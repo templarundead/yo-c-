@@ -94,8 +94,8 @@ int main(int argc, char** argv)
 		re2::RE2 re(pat, o);
 		std::println("pattern ok={} error='{}' groups={}", re.ok(), re.error(),
 					 re.NumberOfCapturingGroups());
-		const char* text = std::getenv("YO_PROBE_TEXT") != nullptr ? std::getenv("YO_PROBE_TEXT")
-																   : "";
+		const std::string text_storage = env_var("YO_PROBE_TEXT").value_or(std::string());
+		const char* text = text_storage.c_str();
 		re2::StringPiece m[4];
 		const bool hit = re.Match(re2::StringPiece(text), 0, std::strlen(text),
 								  re2::RE2::UNANCHORED, m, 4);
