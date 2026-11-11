@@ -52,7 +52,7 @@ jobs:
 
   windows-msvc:
     name: Windows / MSVC, тесты
-    runs-on: windows-2022
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
 
@@ -72,7 +72,7 @@ jobs:
 
   windows-clang-cl:
     name: Windows / clang-cl, артефакты
-    runs-on: windows-2022
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
 
