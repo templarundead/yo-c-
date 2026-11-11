@@ -47,7 +47,8 @@
   кнопок в ядре (проверяются тестами без Windows); горячие клавиши `1`–`6`,
   `Enter`, `Esc`, ответы Е/Ё/Всегда/Пропустить/Откат/Прервать.
 - Сборка GUI проверяется кросс-компиляцией (zig + CMake, mingw-цель,
-  включая Abseil/RE2): `yo-gui.exe` собирается и линкуется.
+  включая Abseil/RE2): `yo-gui.exe` собирается и линкуется. Одной командой:
+  `tools/build-windows.sh` (см. «Кросс-сборка под Windows» ниже).
 - `bench/` — Google Benchmark: загрузка словаря, поиск словоформы,
   правило РВ, ёфикация 1 МБ и 10 МБ (**≈31 МБ/с** на ядро,
   см. ARCHITECTURE.md §5.2.1), документное ядро и кадр отрисовки
@@ -112,6 +113,33 @@ cmake --build build -j
 ./build/tests/yo_tests                    # тесты
 ./build/bench/yo_bench --benchmark_min_time=0.3s   # бенчмарки
 ```
+
+### Кросс-сборка под Windows с Linux-хоста
+
+Windows-SDK не нужен: zig приносит и компилятор, и mingw-заголовки/CRT
+с библиотеками `d2d1`, `dwrite`, `dwmapi`, `comdlg32`, `shell32`.
+
+```bash
+python3 -m pip install --user ziglang ninja   # cmake >= 3.28 — отдельно
+export PATH="$HOME/.local/bin:$PATH"
+
+tools/build-windows.sh          # или вручную:
+# cmake -G Ninja -S . -B build-win64 \
+#   -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/zig-windows.cmake \
+#   -DCMAKE_BUILD_TYPE=Release \
+#   -DYO_BUILD_GUI=ON -DYO_BUILD_CLI=ON -DYO_BUILD_TESTS=OFF
+# cmake --build build-win64 -j
+```
+
+Результат: `build-win64/src/app/yo-gui.exe` и `build-win64/src/cli/yo-cli.exe`
+(PE32+ x86-64), плюс `dist-win64/` и `yo-windows-x64.zip` с exe, словарями
+`yox.dat`/`yo_regexpr.dat` и лицензиями — в таком виде комплект запускается
+на Windows как есть.
+
+Проверить без Windows можно так: `zig`-сборка статически линкует mingw-CRT,
+поэтому под wine работает и GUI, и CLI, и тесты (`-DYO_BUILD_TESTS=ON`,
+запуск `wine build-win64/tests/yo_tests.exe`). Поставочная сборка для Windows
+всё равно собирается на Windows через `clang-cl` (`CMakePresets.json`).
 
 Куда попадают бинарники (пути повторяют дерево `src/`, не корень сборки):
 
