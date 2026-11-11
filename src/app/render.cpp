@@ -319,6 +319,9 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 		std::wstring wide = utf8_to_wide(bytes);
 		if (wide.empty())
 			continue;
+		// Ширина текста для горизонтальной прокрутки уточняется по видимым
+		// строкам: полный проход по гигабайтному файлу недопустим.
+		ed.note_line_cells(ed.prefix_cells(i, bytes.size()));
 
 		CachedLine* slot = nullptr;
 		for (CachedLine& c : cache_)

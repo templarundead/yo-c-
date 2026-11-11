@@ -5,9 +5,11 @@
 #include "yo/codec.hpp"
 #include "yo/cp1251.hpp"
 #include "yo/dict.hpp"
+#include "yo/editor.hpp"
 #include "yo/mapped.hpp"
 #include "yo/regexdict.hpp"
 #include "yo/textbuf.hpp"
+#include "yo/utf.hpp"
 #include "yo/yofy.hpp"
 
 #include <benchmark/benchmark.h>
@@ -361,24 +363,91 @@ void bench_textbuf_undo(benchmark::State& state)
 	}
 }
 
+// Записать файл нужного размера, не держа его целиком в памяти.
+void ensure_text_file(const std::filesystem::path& path, std::size_t target_bytes)
+{
+	if (std::filesystem::exists(path) && std::filesystem::file_size(path) == target_bytes)
+		return;
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	std::size_t written = 0;
+	std::size_t line = 0;
+	while (written < target_bytes)
+	{
+		std::string block;
+		block.reserve(1U << 20);
+		while (block.size() < (1U << 20))
+		{
+			block += "Строка номер ";
+			block += std::to_string(line++);
+			block += (line % 7 == 0) ? "\r\n" : "\n";
+		}
+		const std::size_t take = std::min(block.size(), target_bytes - written);
+		out.write(block.data(), static_cast<std::streamsize>(take));
+		written += take;
+	}
+}
+
+// Пара правок (вставка + отмена) в 20 МБ тексте: цена сдвига индекса строк.
+// Документ строится один раз и возвращается в исходное состояние каждую
+// итерацию, поэтому в замер попадают только сами правки.
+void bench_textbuf_edit_at(benchmark::State& state, bool at_end)
+{
+	const std::string text = make_text(std::size_t{ 20 } << 20);
+	auto buf = std::make_shared<TextBuffer>(std::make_shared<MemorySource>(text));
+	const std::size_t at = at_end ? buf->size() : buf->size() / 2;
+	for ([[maybe_unused]] auto _ : state)
+	{
+		buf->insert(at, "ё");
+		buf->undo();
+	}
+	// В итерации две правки (вставка + отмена): время одной — половина.
+	state.counters["lines"] = static_cast<double>(buf->line_count());
+}
+
+// Кадр отрисовки без Direct2D: сборка текста 50 видимых строк в UTF-16.
+void bench_paint_frame(benchmark::State& state, std::size_t target_bytes)
+{
+	const auto buf = textbuf_of(target_bytes);
+	auto ed = std::make_shared<Editor>(buf);
+	Metrics m;
+	ed->set_metrics(m);
+	ed->set_viewport(1000.0F, 50.0F * m.line_height);
+	const std::size_t lines = buf->line_count();
+	std::size_t offset = 0;
+	for ([[maybe_unused]] auto _ : state)
+	{
+		const std::size_t line = (offset++ * 7919) % std::max<std::size_t>(1, lines - 60);
+		ed->scroll_by(0.0F, ed->line_top(line) - ed->scroll_y());
+		const std::size_t first = ed->first_visible_line();
+		const std::size_t count = ed->visible_line_count();
+		std::size_t bytes = 0;
+		for (std::size_t i = first; i < first + count && i < lines; ++i)
+		{
+			const std::string_view v = buf->line_text(i);
+			const std::u16string wide = utf8_to_utf16(v);
+			benchmark::DoNotOptimize(wide.size());
+			bytes += v.size();
+		}
+		state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(bytes));
+	}
+}
+
 // mmap: открытие файла без копирования + индекс строк.
 void bench_mapped_load(benchmark::State& state, std::size_t target_bytes)
 {
-	const auto path = std::filesystem::temp_directory_path() / "yo-bench-textbuf.txt";
-	if (!std::filesystem::exists(path) || std::filesystem::file_size(path) != target_bytes)
-	{
-		const std::string text = make_text(target_bytes);
-		std::ofstream out(path, std::ios::binary);
-		out.write(text.data(), static_cast<std::streamsize>(text.size()));
-	}
+	const auto path = std::filesystem::temp_directory_path() /
+					  ("yo-bench-text-" + std::to_string(target_bytes) + ".txt");
+	ensure_text_file(path, target_bytes);
 	for ([[maybe_unused]] auto _ : state)
 	{
 		auto mapped = MappedFile::open(path.string());
 		TextBuffer buf(mapped);
 		benchmark::DoNotOptimize(buf.line_count());
 		state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(target_bytes));
+		state.counters["lines"] = static_cast<double>(buf.line_count());
 	}
-	std::filesystem::remove(path);
+	if (target_bytes <= (std::size_t{ 200 } << 20))
+		std::filesystem::remove(path);
 }
 
 } // namespace
@@ -397,6 +466,11 @@ BENCHMARK_CAPTURE(bench_yoficate, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark
 BENCHMARK_CAPTURE(bench_textbuf_load, 1MB, std::size_t{ 1 } << 20)->Unit(benchmark::kMillisecond);
 BENCHMARK_CAPTURE(bench_textbuf_load, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark::kMillisecond);
 BENCHMARK_CAPTURE(bench_mapped_load, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark::kMillisecond);
+BENCHMARK_CAPTURE(bench_mapped_load, 100MB, std::size_t{ 100 } << 20)->Unit(benchmark::kMillisecond);
+BENCHMARK_CAPTURE(bench_mapped_load, 1GB, std::size_t{ 1 } << 30)->Unit(benchmark::kMillisecond);
+BENCHMARK_CAPTURE(bench_textbuf_edit_at, middle, false)->Unit(benchmark::kMicrosecond);
+BENCHMARK_CAPTURE(bench_textbuf_edit_at, end, true)->Unit(benchmark::kMicrosecond);
+BENCHMARK_CAPTURE(bench_paint_frame, 10MB, std::size_t{ 10 } << 20)->Unit(benchmark::kMicrosecond);
 BENCHMARK(bench_textbuf_line)->Unit(benchmark::kNanosecond);
 BENCHMARK(bench_textbuf_line_of)->Unit(benchmark::kNanosecond);
 BENCHMARK(bench_textbuf_edit)->Unit(benchmark::kMillisecond);

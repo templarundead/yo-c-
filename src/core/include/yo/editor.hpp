@@ -96,7 +96,12 @@ public:
 	[[nodiscard]] std::size_t first_visible_line() const;
 	[[nodiscard]] std::size_t visible_line_count() const;
 	[[nodiscard]] float content_height() const;
-	[[nodiscard]] float text_width() const; // ширина самой длинной строки, px
+	// Ширина самой длинной известной строки, px. Полный проход по документу
+	// не делается: при первом обращении просматриваются первые
+	// kWidthScanLines строк, дальше максимум уточняется по мере отрисовки
+	// (note_line_cells). Для горизонтальной полосы прокрутки этого достаточно.
+	[[nodiscard]] float text_width() const;
+	void note_line_cells(std::size_t cells) const;
 
 	// --- геометрия ---
 	// Координаты в системе документа (без отступа окна и без прокрутки):

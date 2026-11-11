@@ -576,12 +576,17 @@ float Editor::content_height() const
 	return static_cast<float>(buf_->line_count()) * std::max(1.0F, metrics_.line_height);
 }
 
+namespace {
+// Сколько строк просматривать при первом вычислении ширины текста.
+constexpr std::size_t kWidthScanLines = 5000;
+} // namespace
+
 float Editor::text_width() const
 {
 	if (width_dirty_)
 	{
 		float best = 0.0F;
-		const std::size_t n = buf_->line_count();
+		const std::size_t n = std::min<std::size_t>(buf_->line_count(), kWidthScanLines);
 		for (std::size_t i = 0; i < n; ++i)
 		{
 			const std::size_t cells = prefix_cells(i, buf_->line_text(i).size());
@@ -593,6 +598,13 @@ float Editor::text_width() const
 		width_dirty_ = false;
 	}
 	return cached_text_width_;
+}
+
+void Editor::note_line_cells(std::size_t cells) const
+{
+	const float w = static_cast<float>(cells) * metrics_.char_width;
+	if (w > cached_text_width_)
+		cached_text_width_ = w;
 }
 
 void Editor::invalidate_width() { width_dirty_ = true; }

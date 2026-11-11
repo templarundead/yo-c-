@@ -395,12 +395,17 @@ void TextBuffer::index_after_edit(std::size_t line_a, std::size_t a, std::size_t
 
 	starts_.resize(std::min(lo, starts_.size()));
 	starts_.insert(starts_.end(), new_bounds.begin(), new_bounds.end());
+	// Сдвиг хвоста и вставка «на место», без прохода по всему индексу:
+	// иначе каждая правка стоила бы O(числа строк документа).
 	for (std::size_t& s : tail)
 		s = static_cast<std::size_t>(static_cast<std::ptrdiff_t>(s) + delta);
-	starts_.insert(starts_.end(), tail.begin(), tail.end());
-	// Граница, созданная правкой, может совпать со сдвинутой старой
-	// (p_new не всегда происходит из старой границы) — убираем дубль.
-	starts_.erase(std::unique(starts_.begin(), starts_.end()), starts_.end());
+	std::size_t skip = 0;
+	// Граница, созданная правкой, может совпасть со сдвинутой старой
+	// (p_new не всегда происходит из старой границы): дубль на стыке
+	// отбрасываем — массив обязан строго возрастать.
+	if (!tail.empty() && !starts_.empty() && tail.front() == starts_.back())
+		skip = 1;
+	starts_.insert(starts_.end(), tail.begin() + static_cast<std::ptrdiff_t>(skip), tail.end());
 	if (starts_.empty())
 		starts_.push_back(0);
 }
