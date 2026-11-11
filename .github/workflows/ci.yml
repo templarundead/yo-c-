@@ -69,7 +69,17 @@ jobs:
         run: cmake --preset win-msvc-release -DYO_BUILD_TESTS=ON -DYO_WARNINGS_AS_ERRORS=OFF
 
       - name: Сборка
-        run: cmake --build --preset win-msvc-release
+        shell: pwsh
+        # Ошибки дублируем аннотациями: они доступны через API даже там, где
+        # журнал джобы скачать нельзя.
+        run: |
+          cmake --build --preset win-msvc-release 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log | Select-String -Pattern 'error|fatal' |
+              Select-Object -First 12 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Тесты
         run: ctest --test-dir build/win-msvc-release --output-on-failure
@@ -97,7 +107,15 @@ jobs:
         run: cmake --preset win-clang-release -DYO_WARNINGS_AS_ERRORS=OFF
 
       - name: Сборка GUI и CLI
-        run: cmake --build --preset win-clang-release
+        shell: pwsh
+        run: |
+          cmake --build --preset win-clang-release 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log | Select-String -Pattern 'error|fatal' |
+              Select-Object -First 12 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Комплект
         shell: pwsh
