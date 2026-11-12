@@ -1,5 +1,6 @@
 // Запомненные ответы «Всегда Е/Ё»: разбор и запись файла.
 
+#include "yo/dict.hpp"
 #include "yo/usersel.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -52,4 +53,14 @@ TEST_CASE("user sel: пустой файл и мусор", "[usersel]")
 	CHECK(parse_user_selections("\n\n\n").empty());
 	CHECK(parse_user_selections("; только комментарий\n").empty());
 	CHECK(format_user_selections({}).empty());
+}
+
+TEST_CASE("user sel: словарь знает, есть ли запомненные ответы", "[usersel][options]")
+{
+	// Состояние пункта «Сбросить "Всегда Е/Ё"» в оригинале —
+	// SetMenuItem('Clearusersel1', …): он активен, только если ответы есть.
+	yo::Dictionary dict;
+	REQUIRE_FALSE(dict.has_user_sel());
+	dict.reset_user_sel(); // сброс пустого словаря ничего не ломает
+	REQUIRE_FALSE(dict.has_user_sel());
 }

@@ -432,7 +432,8 @@ void Renderer::draw_find_bar(const FindBarView& view)
 
 // Подсветка найденных совпадений: жёлтая заливка под текстом.
 void Renderer::draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
-						  const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color)
+						  const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color,
+						  float height_fraction)
 {
 	if (rt_ == nullptr || brush_ == nullptr || marks.empty())
 		return;
@@ -461,7 +462,12 @@ void Renderer::draw_marks(Editor& ed, float scroll_x, float scroll_y, float text
 				continue;
 			const float x1 = text_x0() + ed.row_width(row, a) - scroll_x;
 			const float x2 = text_x0() + ed.row_width(row, b) - scroll_x;
-			rt_->FillRectangle(D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F), brush_);
+			// height_fraction < 1 — тонкая линия у нижнего края ряда (цвет
+			// пометки), 1 — фон всей высоты.
+			const float top = height_fraction >= 1.0F ? y + 1.0F
+													  : y + lh * (1.0F - height_fraction) - 1.0F;
+			const float bottom = height_fraction >= 1.0F ? y + lh - 1.0F : y + lh - 1.0F;
+			rt_->FillRectangle(D2D1::RectF(x1, top, std::max(x2, x1 + 1.0F), bottom), brush_);
 		}
 	}
 }
@@ -490,6 +496,21 @@ void Renderer::draw_options(const OptionsView& view)
 	for (std::size_t i = 0; i < view.rows.size(); ++i)
 	{
 		const OptionsRowView& row = view.rows[i];
+		if (row.tab)
+		{
+			// Заголовок вкладки: активная — залита цветом выделения и
+			// подчёркнута акцентом, как ярлык TPageControl оригинала.
+			brush_->SetColor(row.tab_active ? theme_.selection
+											: (static_cast<int>(i) == view.focus ? theme_.status_bg
+																				: theme_.gutter));
+			rt_->FillRectangle(row.rect, brush_);
+			brush_->SetColor(row.tab_active ? theme_.accent : theme_.status_fg);
+			rt_->DrawRectangle(row.rect, brush_, 1.0F);
+			brush_->SetColor(row.tab_active ? theme_.text : theme_.status_fg);
+			rt_->DrawTextW(row.label.c_str(), static_cast<UINT32>(row.label.size()), fmt_center_,
+						   row.rect, brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+			continue;
+		}
 		if (static_cast<int>(i) == view.focus)
 		{
 			brush_->SetColor(theme_.selection);
@@ -927,7 +948,10 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 
 	// Подсветка ёфикационных замен (как Mark оригинала) и найденного —
 	// под выделением и под текстом.
-	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, D2D1::ColorF(0.25F, 0.75F, 0.35F, 0.30F));
+	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, yofy_back_color_);
+	// Цвет пометки (ColorMark) — линия под заменой: в оригинале им красились
+	// сами буквы, у нас текст перекрашивать нельзя (раскладка рядов).
+	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, yofy_text_color_, 0.12F);
 	draw_marks(ed, scroll_x, scroll_y, text_h, marks, D2D1::ColorF(0.95F, 0.80F, 0.20F, 0.35F));
 
 	// Полоса выделения рисуется под текстом.

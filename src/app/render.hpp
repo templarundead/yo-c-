@@ -77,6 +77,8 @@ struct OptionsRowView
 	bool check = false;
 	bool checked = false;
 	bool path = false;
+	bool tab = false;		 // заголовок вкладки («Ёфикация»/«Редактор»/«Словари»)
+	bool tab_active = false; // активная вкладка — залитая
 };
 
 struct OptionsButtonView
@@ -269,6 +271,16 @@ public:
 
 	// Всё рисование идёт в DIP (независимых от DPI пикселях), а сообщения
 	// мыши приходят в физических пикселях — App переводит их этим множителем.
+	// Цвета помеченных замен — [Colors] ColorMark / ColorBackMark оригинала
+	// (в оригинале это цвет текста и фон помеченных символов в RichEdit).
+	void set_yofy_colors(D2D1_COLOR_F text_color, D2D1_COLOR_F back_color)
+	{
+		yofy_text_color_ = text_color;
+		yofy_back_color_ = back_color;
+	}
+	[[nodiscard]] D2D1_COLOR_F yofy_text_color() const noexcept { return yofy_text_color_; }
+	[[nodiscard]] D2D1_COLOR_F yofy_back_color() const noexcept { return yofy_back_color_; }
+
 	[[nodiscard]] float dpi_scale() const noexcept { return dpi_scale_; }
 	// Высота нашей строки меню в DIP: она внутри клиентской области.
 	[[nodiscard]] float bar_height() const noexcept { return bar_h_; }
@@ -281,8 +293,11 @@ private:
 	void draw_find_bar(const FindBarView& view);
 	void draw_options(const OptionsView& view);
 	void draw_dict_editor(const DictView& view);
+	// height_fraction = 1 — заливка ряда (фон пометки), меньше — тонкая полоса
+	// у нижнего края (цвет пометки).
 	void draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
-					const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color);
+					const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color,
+					float height_fraction = 1.0F);
 	void draw_ask(const AskView& view);
 	void draw_menu_bar(const MenuBarView& bar);
 	void draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, float text_h,
@@ -313,6 +328,9 @@ private:
 	float gutter_w_ = 0.0F;
 	float padding_ = 6.0F;
 	float bar_h_ = 26.0F;
+	// Подсветка замен по умолчанию (совпадает с прежним зелёным).
+	D2D1_COLOR_F yofy_text_color_ = D2D1::ColorF(0.25F, 0.75F, 0.35F, 1.0F);
+	D2D1_COLOR_F yofy_back_color_ = D2D1::ColorF(0.25F, 0.75F, 0.35F, 0.30F);
 	float ui_line_h_ = 16.0F;  // высота строки шрифта интерфейса
 	float ui_char_w_ = 6.0F;
 	float ask_line_h_ = 18.0F; // строка панели вопросов

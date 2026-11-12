@@ -449,13 +449,26 @@ FB2 открывается как plain text (RichEdit читает XML как �
 вариант), `RegExprs` (использовать словарь regex; выключен, если словарь пуст),
 `FBFormat` (учитывать формат FictionBook).
 
-Редактор: `FastScroll` (быстрая прокрутка — не перематывать вьюпорт
-к каждому слову при ёфикации), `Mark` (подсвечивать замены) + цвета
-`clMark/clBackMark` (диалог цвета, превью в `SampleEditor`),
-`WordWrap`, `LastFile` (запомнить последний файл), `ToConfirmClose`
-(подтверждать закрытие), `AutoUnicode` (автоопределение Unicode),
-`LinesBelow` (сколько строк держать под словом при запросе, по умолчанию 2),
-шрифт редактора (имя/размер/charset, `FontDialog`), `ShowToolBar`.
+Ёфикация (продолжение): `LinesBelow` (edit «Количество строк промотки»,
+по умолчанию 2 — держать столько строк под словом при запросе) и
+`FastScroll` («Быстрая промотка» — не перематывать вьюпорт к каждому слову);
+оба контрола стоят на вкладке «Ёфикация» (DFM: `eLinesBelow` вверху,
+`cbFastScroll` внизу).
+
+Редактор: `Mark` (подсвечивать замены) + цвета `clMark/clBackMark`
+(кнопки «Цвет»/«Фон» → `ColorDialog`, превью в `SampleEditor`),
+`WordWrap`, `LastFile` (запомнить последний файл), шрифт редактора
+(имя/размер/charset, `FontDialog`), `AutoUnicode` (автоопределение Unicode),
+`ShowToolBar`, `ToConfirmClose` (галочка «Не подтверждать закрытие
+программы» — значение пишется в `ToConfirmClose` как есть).
+Порядок контролов вкладок: `Label1` + `eLinesBelow`, `cbCheckYo`,
+`cbNoVarOnly`, `cbVarOnly`, `cbAlwaysAsk`, `cbToConfirmAbbr`,
+`cbToConfirmCap`, `cbToConfirmEllipsis`, `cbProposeLast`, `cbRegExprs`,
+`cbFBFormat`, `cbFastScroll`; затем `cbMark`, `cbWordWrap`, `cbLastFile`,
+`bFont`, `bMark`, `bBackMark`, `cbAutoUnicode`, `cbShowToolbar`,
+`cbToConfirmClose`; внизу `bOK`, `bCancel`, `bOKSave`.
+Примечание: в подписи `cbToConfirmAbbr` опечатка оригинала
+(«Всегда подверждать…»); в yo-c- она сохранена намеренно.
 
 Взаимные блокировки в диалоге: `AlwaysAsk` отключает три `ToConfirm*`;
 `VarOnly` и `NoVarOnly` взаимоисключают друг друга; кнопки цветов

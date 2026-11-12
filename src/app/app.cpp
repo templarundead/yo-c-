@@ -80,6 +80,10 @@ constexpr int kCmdOpenRegexDict = 1113;
 constexpr int kCmdClearUserSel = 1114;
 constexpr int kCmdWordWrap = 1115;
 constexpr int kCmdDictEditor = 1116;
+// Пункты оригинала: «Ёфицировать с начала текста» (Ctrl+F9) и «Ещё о
+// программе» (открывает HelpURL в браузере).
+constexpr int kCmdYofyFromStart = 1117;
+constexpr int kCmdHelpMore = 1118;
 
 constexpr UINT_PTR kCaretTimer = 1;
 constexpr int kDefaultWidth = 1000;
@@ -378,14 +382,35 @@ void App::load_settings()
 	// и файл от старого ёфикатора.
 	constexpr std::string_view kYo = "Yo";
 	font_size_ = std::clamp(ini.get_float(kYo, "FontSize", font_size_), 6.0F, 96.0F);
+	// Порядок и умолчания — как в ReadIni оригинала.
 	always_ask_ = ini.get_bool(kYo, "AlwaysAsk", always_ask_);
-	silent_yofy_ = ini.get_bool(kYo, "SilentYofy", silent_yofy_);
 	mark_ = ini.get_bool(kYo, "Mark", mark_);
-	propose_last_ = ini.get_bool(kYo, "ProposeLast", propose_last_);
-	regexs_ = ini.get_bool(kYo, "RegExprs", regexs_);
-	to_confirm_abbr_ = ini.get_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
-	// Не из формата оригинала: перенос по словам (по умолчанию выключен).
+	fast_scroll_ = ini.get_bool(kYo, "FastScroll", fast_scroll_);
+	check_yo_ = ini.get_bool(kYo, "CheckYo", check_yo_);
+	no_var_only_ = ini.get_bool(kYo, "NoVarOnly", no_var_only_);
+	var_only_ = ini.get_bool(kYo, "VarOnly", var_only_);
 	word_wrap_ = ini.get_bool(kYo, "WordWrap", word_wrap_);
+	propose_last_ = ini.get_bool(kYo, "ProposeLast", propose_last_);
+	fb_format_ = ini.get_bool(kYo, "FBFormat", fb_format_);
+	auto_unicode_ = ini.get_bool(kYo, "AutoUnicode", auto_unicode_);
+	regexs_ = ini.get_bool(kYo, "RegExprs", regexs_);
+	recall_last_file_ = ini.get_bool(kYo, "RecallLastFile", recall_last_file_);
+	to_confirm_close_ = ini.get_bool(kYo, "ToConfirmClose", to_confirm_close_);
+	to_confirm_abbr_ = ini.get_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+	to_confirm_ellipsis_ = ini.get_bool(kYo, "ToConfirmEllipsis", to_confirm_ellipsis_);
+	to_confirm_cap_ = ini.get_bool(kYo, "ToConfirmCap", to_confirm_cap_);
+	lines_below_ = static_cast<int>(std::clamp<long long>(ini.get_int(kYo, "LinesBelow", lines_below_), 0, 40));
+	// Наше дополнение (в оригинале такой опции нет).
+	silent_yofy_ = ini.get_bool(kYo, "SilentYofy", silent_yofy_);
+	// Палитра окна настроек: цвета замен лежат в [Colors] индексами.
+	mark_color_ = static_cast<int>(std::clamp<long long>(
+		ini.get_int("Colors", "ColorMark", mark_color_), 0, static_cast<long long>(yo::options_colors().size()) - 1));
+	back_mark_color_ = static_cast<int>(std::clamp<long long>(
+		ini.get_int("Colors", "ColorBackMark", back_mark_color_), 0,
+		static_cast<long long>(yo::options_colors().size()) - 1));
+	// [Internal] — ключи оригинала; у нас не используются, но должны
+	// переживать перезапись файла (см. save_settings).
+	show_toolbar_ = ini.get_bool("ToolBar", "ShowToolBar", show_toolbar_);
 
 	const auto get_w = [&](std::string_view key)
 	{ return widen(ini.get(kYo, key)); };
@@ -441,13 +466,35 @@ void App::save_settings()
 		}
 	}
 	constexpr std::string_view kYo = "Yo";
+	// Набор ключей — как в WriteIni оригинала (плюс наши SilentYofy/[Colors]).
 	ini.set_bool(kYo, "AlwaysAsk", always_ask_);
-	ini.set_bool(kYo, "SilentYofy", silent_yofy_);
 	ini.set_bool(kYo, "Mark", mark_);
-	ini.set_bool(kYo, "ProposeLast", propose_last_);
-	ini.set_bool(kYo, "RegExprs", regexs_);
-	ini.set_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+	ini.set_bool(kYo, "FastScroll", fast_scroll_);
+	ini.set_bool(kYo, "CheckYo", check_yo_);
+	ini.set_bool(kYo, "NoVarOnly", no_var_only_);
+	ini.set_bool(kYo, "VarOnly", var_only_);
 	ini.set_bool(kYo, "WordWrap", word_wrap_);
+	ini.set_bool(kYo, "ProposeLast", propose_last_);
+	ini.set_bool(kYo, "FBFormat", fb_format_);
+	ini.set_bool(kYo, "AutoUnicode", auto_unicode_);
+	ini.set_bool(kYo, "RegExprs", regexs_);
+	ini.set_bool(kYo, "ToConfirmClose", to_confirm_close_);
+	ini.set_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+	ini.set_bool(kYo, "ToConfirmEllipsis", to_confirm_ellipsis_);
+	ini.set_bool(kYo, "ToConfirmCap", to_confirm_cap_);
+	ini.set_int(kYo, "LinesBelow", lines_below_);
+	ini.set_bool(kYo, "SilentYofy", silent_yofy_);
+	ini.set_int("Colors", "ColorMark", mark_color_);
+	ini.set_int("Colors", "ColorBackMark", back_mark_color_);
+	ini.set_bool("ToolBar", "ShowToolBar", show_toolbar_);
+	ini.set("Yo", "ButtonHotKeys", "1234"); // порядок кнопок AskPanel, как в оригинале
+	ini.set_int("Yo", "WordsBufferLength", 5);
+	ini.set_int("Yo", "FontCharset", 1);
+	if (!ini.has("Internal", "UTF8Warning"))
+		ini.set_bool("Internal", "UTF8Warning", true);
+	if (!ini.has("Internal", "UTFLength"))
+		ini.set_int("Internal", "UTFLength", 512);
+	ini.set("Yo", "FontName", "Courier New");
 	ini.set_float(kYo, "FontSize", font_size_);
 	if (!dict_setting_.empty())
 		ini.set(kYo, "Dictionary", narrow(dict_setting_));
@@ -597,7 +644,9 @@ void App::on_create()
 	if (!renderer_.init(hwnd_, font_size_))
 		MessageBoxW(hwnd_, L"Не удалось инициализировать Direct2D/DirectWrite.", L"Ё", MB_ICONERROR);
 	renderer_.set_dpi(dpi_scale_);
+	apply_mark_colors(); // [Colors] ColorMark / ColorBackMark
 	sync_metrics();
+	apply_word_wrap(); // [Yo] WordWrap (в оригинале по умолчанию включён)
 
 	build_menus();
 	setup_accels();
@@ -614,28 +663,38 @@ void App::on_create()
 
 void App::build_menus()
 {
-	// Заголовки и пункты хранятся данными: рисуем их сами, потому что системная
-	// строка меню на тёмной теме остаётся белой и выглядит чужеродно.
+	// Заголовки и пункты хранятся данными: рисуем их сами, потому что
+	// системная строка меню на тёмной теме остаётся белой и выглядит
+	// чужеродно.
+	//
+	// Состав, порядок, подписи и сочетания клавиш — один в один с MainMenu1
+	// оригинала (src/Main.dfm): «Файл / Редактировать / Ёфикация / Настройки /
+	// Помощь». Наши собственные пункты (редактор словаря, перечитать с диска,
+	// замена, кодировки, перевод строк, вид) собраны отдельными группами;
+	// что именно добавлено — в DEVIATIONS.md.
 	menus_.clear();
 
 	MenuDef file;
 	file.title = L"Файл";
 	file.entries = {
-		{ L"Создать\tCtrl+N", kCmdNew },
-		{ L"Открыть…\tCtrl+O", kCmdOpen },
-		{ L"Перечитать с диска\tCtrl+R", kCmdReload },
+		{ L"Загрузить текст\tCtrl+L", kCmdOpen },
+		{ L"Сохранить текст\tCtrl+Alt+S", kCmdSave },
+		{ L"Сохранить текст как\tCtrl+S", kCmdSaveAs },
+		{ L"Очистить текстовое окно", kCmdNew },
 		{ L"", 0, true },
-		{ L"Сохранить\tCtrl+S", kCmdSave },
-		{ L"Сохранить как…\tCtrl+Shift+S", kCmdSaveAs },
+		{ L"Загрузить основной словарь", kCmdOpenDict },
+		{ L"Загрузить словарь регулярных выражений", kCmdOpenRegexDict },
+		{ L"Очистить список последних файлов", kCmdClearMru },
 		{ L"", 0, true },
+		// Наши пункты: в оригинале редактора словаря и перечитывания файла нет.
 		{ L"Редактор словаря…\tCtrl+Shift+D", kCmdDictEditor },
-		{ L"Загрузить основной словарь…", kCmdOpenDict },
-		{ L"Загрузить словарь РВ…", kCmdOpenRegexDict },
+		{ L"Перечитать с диска\tCtrl+Shift+R", kCmdReload },
 		{ L"", 0, true },
-		{ L"Свойства файла…\tCtrl+P", kCmdFileProp },
+		{ L"Свойства файла\tCtrl+P", kCmdFileProp },
+		{ L"Выход", kCmdExit },
 	};
-	// Последние файлы — динамические пункты после разделителя (Openfile0
-	// оригинала): имя файла и Ctrl+1…9.
+	// Список последних файлов — как скрытый шаблон Openfile0 оригинала: он
+	// стоит последним в меню «Файл» и раскрывается в имена файлов.
 	if (!mru_.empty())
 	{
 		file.entries.push_back(MenuEntry{ L"", 0, true });
@@ -649,49 +708,58 @@ void App::build_menus()
 			file.entries.push_back(
 				MenuEntry{ label, kCmdMru1 + static_cast<int>(i) });
 		}
-		file.entries.push_back(MenuEntry{ L"Очистить список последних файлов", kCmdClearMru });
 	}
-	file.entries.push_back(MenuEntry{ L"", 0, true });
-	file.entries.push_back(MenuEntry{ L"Выход\tAlt+F4", kCmdExit });
 	menus_.push_back(std::move(file));
 
 	MenuDef edit;
-	edit.title = L"Правка";
+	edit.title = L"Редактировать";
 	edit.entries = {
-		{ L"Отменить\tCtrl+Z", kCmdUndo },
-		{ L"Повторить\tCtrl+Y", kCmdRedo },
-		{ L"", 0, true },
 		{ L"Вырезать\tCtrl+X", kCmdCut },
 		{ L"Копировать\tCtrl+C", kCmdCopy },
 		{ L"Вставить\tCtrl+V", kCmdPaste },
-		{ L"", 0, true },
 		{ L"Выделить всё\tCtrl+A", kCmdSelectAll },
 		{ L"", 0, true },
-		{ L"Найти…\tCtrl+F", kCmdFind },
+		{ L"Откат\tCtrl+Z", kCmdUndo },
+		{ L"", 0, true },
+		{ L"Найти\tCtrl+F", kCmdFind },
+		{ L"Найти регулярное выражение\tCtrl+R", kCmdFindRegex },
+		{ L"Найти снова\tF3", kCmdFindNext },
+		{ L"Искать замену вперёд\tCtrl+W", kCmdYofyNext },
+		{ L"Искать замену назад\tCtrl+Q", kCmdYofyPrev },
+		{ L"", 0, true },
+		// Наши пункты: в оригинале нет замены по образцу и поиска назад.
 		{ L"Заменить…\tCtrl+H", kCmdReplace },
-		{ L"Найти далее\tF3", kCmdFindNext },
 		{ L"Найти назад\tShift+F3", kCmdFindPrev },
-		{ L"Найти по образцу (РВ)…\tCtrl+Shift+R", kCmdFindRegex },
+		{ L"Повторить\tCtrl+Y", kCmdRedo },
 	};
 	menus_.push_back(std::move(edit));
 
 	MenuDef yofy;
 	yofy.title = L"Ёфикация";
 	yofy.entries = {
-		{ L"Ёфицировать\tCtrl+E", kCmdYofify },
+		{ L"Ёфицировать с текущей позиции\tF9", kCmdYofify },
+		{ L"Ёфицировать с начала текста\tCtrl+F9", kCmdYofyFromStart },
+		{ L"Убрать выделение\tShift+F10", kCmdClearMarks },
+		{ L"Сбросить \"Всегда Е/Ё\"", kCmdClearUserSel },
+		{ L"", 0, true },
+		// Наши пункты (в оригинале это только кнопки панели вопросов).
 		{ L"Спросить про слово под курсором\tCtrl+Shift+E", kCmdAskWord },
 		{ L"Без вопросов", kCmdSilentYofy },
-		{ L"", 0, true },
 		{ L"Спрашивать про все слова", kCmdAlwaysAsk },
-		{ L"", 0, true },
-		{ L"Найти замену вперёд\tCtrl+W", kCmdYofyNext },
-		{ L"Найти замену назад\tCtrl+Q", kCmdYofyPrev },
-		{ L"Убрать подсветку замен\tShift+F10", kCmdClearMarks },
-		{ L"Сбросить «Всегда Е/Ё»", kCmdClearUserSel },
-		{ L"", 0, true },
-		{ L"Опции…\tCtrl+,", kCmdOptions },
 	};
 	menus_.push_back(std::move(yofy));
+
+	MenuDef view;
+	view.title = L"Вид";
+	view.entries = {
+		{ L"Крупнее\tCtrl++", kCmdFontBigger },
+		{ L"Мельче\tCtrl+-", kCmdFontSmaller },
+		{ L"Обычный размер\tCtrl+0", kCmdFontReset },
+		{ L"", 0, true },
+		{ L"Номера строк\tCtrl+Shift+L", kCmdLineNumbers },
+		{ L"Перенос по словам\tCtrl+Shift+W", kCmdWordWrap },
+	};
+	menus_.push_back(std::move(view));
 
 	MenuDef enc;
 	enc.title = L"Кодировка";
@@ -713,24 +781,23 @@ void App::build_menus()
 	};
 	menus_.push_back(std::move(eol));
 
-	MenuDef view;
-	view.title = L"Вид";
-	view.entries = {
-		{ L"Крупнее\tCtrl++", kCmdFontBigger },
-		{ L"Мельче\tCtrl+-", kCmdFontSmaller },
-		{ L"Обычный размер\tCtrl+0", kCmdFontReset },
-		{ L"", 0, true },
-		{ L"Номера строк\tCtrl+Shift+L", kCmdLineNumbers },
-		{ L"Перенос по словам\tCtrl+Shift+W", kCmdWordWrap },
+	MenuDef settings;
+	settings.title = L"Настройки";
+	settings.entries = {
+		{ L"Опции\tCtrl+Alt+O", kCmdOptions },
 	};
-	menus_.push_back(std::move(view));
+	menus_.push_back(std::move(settings));
 
 	MenuDef help;
 	help.title = L"Помощь";
 	help.entries = {
 		{ L"О программе\tF1", kCmdAbout },
+		{ L"Ещё о программе", kCmdHelpMore },
 	};
 	menus_.push_back(std::move(help));
+
+	// Начальные состояния disabled/checked — по SetControls/EnableMenu.
+	update_menu_checks();
 
 	layout_menus();
 }
@@ -975,35 +1042,50 @@ void App::menu_key(WPARAM vk)
 
 void App::setup_accels()
 {
+	// Сочетания — из Main.dfm оригинала. Дубли (Ctrl+O для «Загрузить текст»,
+	// Ctrl+, для «Опции», Ctrl+Shift+S для «Сохранить как») оставлены как
+	// наши удобные алиасы: все «родные» сочетания работают как в оригинале.
 	ACCEL accels[] = {
-		{ FCONTROL | FVIRTKEY, 'N', kCmdNew },
+		// Файл
+		{ FCONTROL | FVIRTKEY, 'L', kCmdOpen },
 		{ FCONTROL | FVIRTKEY, 'O', kCmdOpen },
-		{ FCONTROL | FVIRTKEY, 'R', kCmdReload },
-		{ FCONTROL | FVIRTKEY, 'S', kCmdSave },
+		{ FCONTROL | FALT | FVIRTKEY, 'S', kCmdSave },
+		{ FCONTROL | FVIRTKEY, 'S', kCmdSaveAs },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'S', kCmdSaveAs },
-		{ FCONTROL | FVIRTKEY, 'Z', kCmdUndo },
-		{ FCONTROL | FVIRTKEY, 'Y', kCmdRedo },
+		{ FCONTROL | FVIRTKEY, 'N', kCmdNew },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'R', kCmdReload },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'D', kCmdDictEditor },
+		{ FCONTROL | FVIRTKEY, 'P', kCmdFileProp },
+		// Редактировать
 		{ FCONTROL | FVIRTKEY, 'X', kCmdCut },
 		{ FCONTROL | FVIRTKEY, 'C', kCmdCopy },
 		{ FCONTROL | FVIRTKEY, 'V', kCmdPaste },
 		{ FCONTROL | FVIRTKEY, 'A', kCmdSelectAll },
+		{ FCONTROL | FVIRTKEY, 'Z', kCmdUndo },
+		{ FCONTROL | FVIRTKEY, 'Y', kCmdRedo },
 		{ FCONTROL | FVIRTKEY, 'F', kCmdFind },
-		{ FCONTROL | FVIRTKEY, 'E', kCmdYofify },
-		{ FCONTROL | FSHIFT | FVIRTKEY, 'E', kCmdAskWord },
+		{ FCONTROL | FVIRTKEY, 'R', kCmdFindRegex },
 		{ FVIRTKEY, VK_F3, kCmdFindNext },
 		{ FSHIFT | FVIRTKEY, VK_F3, kCmdFindPrev },
 		{ FCONTROL | FVIRTKEY, 'H', kCmdReplace },
-		{ FCONTROL | FSHIFT | FVIRTKEY, 'R', kCmdFindRegex },
 		{ FCONTROL | FVIRTKEY, 'W', kCmdYofyNext },
 		{ FCONTROL | FVIRTKEY, 'Q', kCmdYofyPrev },
+		// Ёфикация
+		{ FVIRTKEY, VK_F9, kCmdYofify },
+		{ FCONTROL | FVIRTKEY, VK_F9, kCmdYofyFromStart },
 		{ FSHIFT | FVIRTKEY, VK_F10, kCmdClearMarks },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'E', kCmdAskWord },
+		// Вид
 		{ FCONTROL | FVIRTKEY, '0', kCmdFontReset },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'L', kCmdLineNumbers },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'W', kCmdWordWrap },
-		{ FCONTROL | FSHIFT | FVIRTKEY, 'D', kCmdDictEditor },
-		{ FCONTROL | FVIRTKEY, 'P', kCmdFileProp },
-		{ FCONTROL | FVIRTKEY, 'L', kCmdOpen },
+		{ FCONTROL | FVIRTKEY, VK_OEM_PLUS, kCmdFontBigger },
+		{ FCONTROL | FVIRTKEY, VK_OEM_MINUS, kCmdFontSmaller },
+		// Настройки и помощь
+		{ FCONTROL | FALT | FVIRTKEY, 'O', kCmdOptions },
+		{ FCONTROL | FVIRTKEY, VK_OEM_COMMA, kCmdOptions },
 		{ FVIRTKEY, VK_F1, kCmdAbout },
+		// Последние файлы — Ctrl+1…9
 		{ FCONTROL | FVIRTKEY, '1', kCmdMru1 },
 		{ FCONTROL | FVIRTKEY, '2', kCmdMru1 + 1 },
 		{ FCONTROL | FVIRTKEY, '3', kCmdMru1 + 2 },
@@ -1013,23 +1095,24 @@ void App::setup_accels()
 		{ FCONTROL | FVIRTKEY, '7', kCmdMru1 + 6 },
 		{ FCONTROL | FVIRTKEY, '8', kCmdMru1 + 7 },
 		{ FCONTROL | FVIRTKEY, '9', kCmdMru1 + 8 },
-		{ FCONTROL | FVIRTKEY, VK_OEM_COMMA, kCmdOptions },
-		{ FALT | FCONTROL | FVIRTKEY, 'O', kCmdOptions },
-		{ FCONTROL | FVIRTKEY, VK_OEM_PLUS, kCmdFontBigger },
-		{ FCONTROL | FVIRTKEY, VK_OEM_MINUS, kCmdFontSmaller },
 	};
 	if (accel_ != nullptr)
 		DestroyAcceleratorTable(accel_);
 	accel_ = CreateAcceleratorTableW(accels, static_cast<int>(std::size(accels)));
 }
 
-// ---------------------------------------------------------------- вид
-
 void App::update_menu_checks()
 {
+	// Доступность пунктов — по SetControls/EnableMenu оригинала: она зависит
+	// от наличия текста, выделения, словаря, сделанных замен и ответов
+	// «Всегда Е/Ё».
+	const bool has_text = buf_ != nullptr && buf_->size() != 0;
 	const bool has_sel = ed_ != nullptr && ed_->has_selection();
 	const bool can_undo = buf_ != nullptr && buf_->can_undo();
 	const bool can_redo = buf_ != nullptr && buf_->can_redo();
+	const bool has_dict = dict_ != nullptr;
+	const bool has_marks = !yofy_marks_.empty();
+	const bool has_usersel = dict_ != nullptr && dict_->has_user_sel();
 
 	for (MenuDef& def : menus_)
 	{
@@ -1045,10 +1128,40 @@ void App::update_menu_checks()
 				break;
 			case kCmdCut:
 			case kCmdCopy:
-				e.enabled = has_sel;
+				e.enabled = has_text && has_sel;
 				break;
 			case kCmdPaste:
 				e.enabled = !readonly_;
+				break;
+			case kCmdSave:
+				// Save1 оригинала: текст есть и у файла уже есть имя.
+				e.enabled = has_text && !path_.empty();
+				break;
+			case kCmdSaveAs:
+			case kCmdNew:
+			case kCmdSelectAll:
+			case kCmdFind:
+			case kCmdFindRegex:
+			case kCmdFileProp:
+				e.enabled = has_text;
+				break;
+			case kCmdFindNext:
+				e.enabled = find_index_ != 0;
+				break;
+			case kCmdYofify:
+			case kCmdYofyFromStart:
+				e.enabled = has_text && has_dict;
+				break;
+			case kCmdYofyNext:
+			case kCmdYofyPrev:
+			case kCmdClearMarks:
+				e.enabled = has_marks;
+				break;
+			case kCmdClearMru:
+				e.enabled = !mru_.empty();
+				break;
+			case kCmdClearUserSel:
+				e.enabled = has_usersel;
 				break;
 			case kCmdEncCp1251:
 				e.checked = enc_ == Encoding::cp1251;
@@ -1816,6 +1929,9 @@ void App::on_command(int id)
 	case kCmdAbout:
 		show_about();
 		break;
+	case kCmdHelpMore:
+		show_help_more();
+		break;
 	case kCmdClearMru:
 		clear_mru();
 		break;
@@ -1842,7 +1958,10 @@ void App::on_command(int id)
 		}
 		break;
 	case kCmdYofify:
-		run_yofification();
+		run_yofification(false); // F9 — с текущей позиции
+		break;
+	case kCmdYofyFromStart:
+		run_yofification(true); // Ctrl+F9 — с начала текста
 		break;
 	case kCmdAlwaysAsk:
 		set_always_ask(!always_ask_);
@@ -2615,6 +2734,12 @@ bool App::options_click(float x, float y)
 		case OptionChoice::font_bigger:
 			options_font_step(1);
 			break;
+		case OptionChoice::lines_below_minus:
+			options_lines_below_step(-1);
+			break;
+		case OptionChoice::lines_below_plus:
+			options_lines_below_step(1);
+			break;
 		default:
 			break;
 		}
@@ -2653,7 +2778,10 @@ bool App::options_key(WPARAM vk, bool ctrl, bool shift)
 		options_close();
 		return true;
 	case VK_RETURN:
-		options_apply(ctrl); // Ctrl+Enter — «применить и запомнить»
+		if (ctrl)
+			options_apply(true); // Ctrl+Enter — «применить и запомнить»
+		else
+			options_activate(options_row_); // Enter по строке — переключить
 		return true;
 	case VK_UP:
 		options_move(-1);
@@ -2675,6 +2803,42 @@ bool App::options_key(WPARAM vk, bool ctrl, bool shift)
 	case VK_TAB:
 		options_move(shift ? -1 : 1);
 		return true;
+	case VK_LEFT:
+	case VK_RIGHT:
+	{
+		// Стрелки по строке числа меняют значение; на вкладках — переключают.
+		if (options_row_ < 0 ||
+			static_cast<std::size_t>(options_row_) >= options_layout_.rows.size())
+			return true;
+		const OptionChoice what =
+			options_layout_.rows[static_cast<std::size_t>(options_row_)].what;
+		const int step = vk == VK_RIGHT ? 1 : -1;
+		if (what == OptionChoice::lines_below)
+			options_lines_below_step(step);
+		else if (what == OptionChoice::font_size)
+			options_font_step(step);
+		else if (what == OptionChoice::mark_color)
+		{
+			options_state_.mark_color = yo::options_next_color(options_state_.mark_color);
+			options_sync_view();
+			invalidate();
+		}
+		else if (what == OptionChoice::back_mark_color)
+		{
+			options_state_.back_mark_color = yo::options_next_color(options_state_.back_mark_color);
+			options_sync_view();
+			invalidate();
+		}
+		else if (what == OptionChoice::tab_yofy || what == OptionChoice::tab_editor ||
+				 what == OptionChoice::tab_dicts)
+		{
+			options_state_.tab = (options_state_.tab + (step > 0 ? 1 : 2)) % 3;
+			options_row_ = 0;
+			options_sync_view();
+			invalidate();
+		}
+		return true;
+	}
 	case VK_SPACE:
 		options_activate(options_row_);
 		return true;
@@ -2720,12 +2884,28 @@ void App::options_open_dialog()
 {
 	if (options_open_)
 		return;
+	// Значения — из текущих настроек (как Options1Click: NewYoOptions := YoOptions).
 	options_state_.always_ask = always_ask_;
 	options_state_.silent_yofy = silent_yofy_;
 	options_state_.mark = mark_;
 	options_state_.propose_last = propose_last_;
 	options_state_.regexs = regexs_;
 	options_state_.to_confirm_abbr = to_confirm_abbr_;
+	options_state_.check_yo = check_yo_;
+	options_state_.no_var_only = no_var_only_;
+	options_state_.var_only = var_only_;
+	options_state_.to_confirm_cap = to_confirm_cap_;
+	options_state_.to_confirm_ellipsis = to_confirm_ellipsis_;
+	options_state_.fb_format = fb_format_;
+	options_state_.lines_below = lines_below_;
+	options_state_.fast_scroll = fast_scroll_;
+	options_state_.mark_color = mark_color_;
+	options_state_.back_mark_color = back_mark_color_;
+	options_state_.word_wrap = word_wrap_;
+	options_state_.recall_last_file = recall_last_file_;
+	options_state_.auto_unicode = auto_unicode_;
+	options_state_.show_toolbar = show_toolbar_;
+	options_state_.to_confirm_close = to_confirm_close_;
 	options_state_.font_size = font_size_;
 	options_state_.dictionary = dictionary_display(false);
 	options_state_.regex_dictionary = dictionary_display(true);
@@ -2742,6 +2922,85 @@ void App::options_close()
 	options_view_ = {};
 	options_layout_ = {};
 	options_hot_ = -1;
+	invalidate();
+}
+
+void App::options_font_step(int delta)
+{
+	options_state_.font_size =
+		std::clamp(options_state_.font_size + static_cast<float>(delta), 8.0F, 48.0F);
+	options_sync_view();
+	invalidate();
+}
+
+void App::options_lines_below_step(int delta)
+{
+	options_state_.lines_below = std::clamp(options_state_.lines_below + delta, 0, 40);
+	options_sync_view();
+	invalidate();
+}
+
+void App::options_apply(bool remember)
+{
+	const bool yofy_changed = mark_ != options_state_.mark ||
+		propose_last_ != options_state_.propose_last || regexs_ != options_state_.regexs ||
+		to_confirm_abbr_ != options_state_.to_confirm_abbr ||
+		check_yo_ != options_state_.check_yo || no_var_only_ != options_state_.no_var_only ||
+		var_only_ != options_state_.var_only || to_confirm_cap_ != options_state_.to_confirm_cap ||
+		to_confirm_ellipsis_ != options_state_.to_confirm_ellipsis ||
+		fb_format_ != options_state_.fb_format || lines_below_ != options_state_.lines_below;
+
+	always_ask_ = options_state_.always_ask;
+	silent_yofy_ = options_state_.silent_yofy;
+	mark_ = options_state_.mark;
+	propose_last_ = options_state_.propose_last;
+	regexs_ = options_state_.regexs;
+	to_confirm_abbr_ = options_state_.to_confirm_abbr;
+	check_yo_ = options_state_.check_yo;
+	no_var_only_ = options_state_.no_var_only;
+	var_only_ = options_state_.var_only;
+	to_confirm_cap_ = options_state_.to_confirm_cap;
+	to_confirm_ellipsis_ = options_state_.to_confirm_ellipsis;
+	fb_format_ = options_state_.fb_format;
+	lines_below_ = options_state_.lines_below;
+	fast_scroll_ = options_state_.fast_scroll;
+	mark_color_ = options_state_.mark_color;
+	back_mark_color_ = options_state_.back_mark_color;
+	recall_last_file_ = options_state_.recall_last_file;
+	auto_unicode_ = options_state_.auto_unicode;
+	show_toolbar_ = options_state_.show_toolbar;
+	to_confirm_close_ = options_state_.to_confirm_close;
+
+	// Перенос по словам применяется сразу (SetWordWrap оригинала), но
+	// правка текста при этом не появляется.
+	if (word_wrap_ != options_state_.word_wrap)
+	{
+		word_wrap_ = options_state_.word_wrap;
+		apply_word_wrap();
+	}
+
+	if (yofy_)
+	{
+		set_always_ask(always_ask_);
+		set_silent_yofy(silent_yofy_);
+		if (yofy_changed)
+			yofy_.reset(); // опции читаются при создании движка
+	}
+
+	if (std::abs(options_state_.font_size - font_size_) > 0.01F &&
+		renderer_.set_font_size(options_state_.font_size, hwnd_))
+		font_size_ = renderer_.font_size();
+
+	apply_mark_colors(); // цвета пометки видны сразу, без перезапуска
+
+	options_open_ = false;
+	options_view_ = {};
+	options_layout_ = {};
+	if (remember)
+		save_settings();
+	update_menu_checks();
+	refresh_view();
+	find_sync_view();
 	invalidate();
 }
 
@@ -2768,6 +3027,8 @@ void App::options_sync_view()
 		view.check = row.check;
 		view.checked = row.checked;
 		view.path = row.path;
+		view.tab = row.tab;
+		view.tab_active = row.tab_active;
 		options_view_.rows.push_back(std::move(view));
 	}
 	for (const yo::OptionButtonBox& button : layout.buttons)
@@ -2781,14 +3042,6 @@ void App::options_sync_view()
 	}
 	options_view_.focus = options_row_;
 	options_view_.hot = options_hot_;
-}
-
-void App::options_font_step(int delta)
-{
-	options_state_.font_size =
-		std::clamp(options_state_.font_size + static_cast<float>(delta), 8.0F, 48.0F);
-	options_sync_view();
-	invalidate();
 }
 
 void App::options_move(int delta)
@@ -2810,14 +3063,40 @@ void App::options_activate(int row)
 	const OptionChoice what = options_layout_.rows[static_cast<std::size_t>(row)].what;
 	switch (what)
 	{
+	// Вкладки
+	case OptionChoice::tab_yofy:
+		options_state_.tab = 0;
+		options_row_ = 0;
+		break;
+	case OptionChoice::tab_editor:
+		options_state_.tab = 1;
+		options_row_ = 0;
+		break;
+	case OptionChoice::tab_dicts:
+		options_state_.tab = 2;
+		options_row_ = 0;
+		break;
+	// «Ёфикация»
+	case OptionChoice::check_yo:
+		options_state_.check_yo = !options_state_.check_yo;
+		break;
+	case OptionChoice::no_var_only:
+		options_state_.no_var_only = !options_state_.no_var_only;
+		break;
+	case OptionChoice::var_only:
+		options_state_.var_only = !options_state_.var_only;
+		break;
 	case OptionChoice::always_ask:
 		options_state_.always_ask = !options_state_.always_ask;
 		break;
-	case OptionChoice::silent_yofy:
-		options_state_.silent_yofy = !options_state_.silent_yofy;
+	case OptionChoice::to_confirm_abbr:
+		options_state_.to_confirm_abbr = !options_state_.to_confirm_abbr;
 		break;
-	case OptionChoice::mark:
-		options_state_.mark = !options_state_.mark;
+	case OptionChoice::to_confirm_cap:
+		options_state_.to_confirm_cap = !options_state_.to_confirm_cap;
+		break;
+	case OptionChoice::to_confirm_ellipsis:
+		options_state_.to_confirm_ellipsis = !options_state_.to_confirm_ellipsis;
 		break;
 	case OptionChoice::propose_last:
 		options_state_.propose_last = !options_state_.propose_last;
@@ -2825,55 +3104,57 @@ void App::options_activate(int row)
 	case OptionChoice::regexs:
 		options_state_.regexs = !options_state_.regexs;
 		break;
-	case OptionChoice::to_confirm_abbr:
-		options_state_.to_confirm_abbr = !options_state_.to_confirm_abbr;
+	case OptionChoice::fb_format:
+		options_state_.fb_format = !options_state_.fb_format;
 		break;
+	case OptionChoice::lines_below: // Enter по строке числа — «+»
+		options_lines_below_step(1);
+		return;
+	case OptionChoice::fast_scroll:
+		options_state_.fast_scroll = !options_state_.fast_scroll;
+		break;
+	// «Редактор»
+	case OptionChoice::mark:
+		options_state_.mark = !options_state_.mark;
+		break;
+	case OptionChoice::mark_color:
+		options_state_.mark_color = yo::options_next_color(options_state_.mark_color);
+		break;
+	case OptionChoice::back_mark_color:
+		options_state_.back_mark_color = yo::options_next_color(options_state_.back_mark_color);
+		break;
+	case OptionChoice::word_wrap:
+		options_state_.word_wrap = !options_state_.word_wrap;
+		break;
+	case OptionChoice::recall_last_file:
+		options_state_.recall_last_file = !options_state_.recall_last_file;
+		break;
+	case OptionChoice::font_size: // Enter по строке «Шрифт» — крупнее
+		options_font_step(1);
+		return;
+	case OptionChoice::auto_unicode:
+		options_state_.auto_unicode = !options_state_.auto_unicode;
+		break;
+	case OptionChoice::show_toolbar:
+		options_state_.show_toolbar = !options_state_.show_toolbar;
+		break;
+	case OptionChoice::to_confirm_close:
+		options_state_.to_confirm_close = !options_state_.to_confirm_close;
+		break;
+	// «Словари» — наши пункты
 	case OptionChoice::dictionary:
 		pick_dictionary(false);
 		break;
 	case OptionChoice::regex_dictionary:
 		pick_dictionary(true);
 		break;
-	case OptionChoice::font_smaller: // строка «Размер текста»: Enter — крупнее
-		options_font_step(1);
-		return;
+	case OptionChoice::silent_yofy:
+		options_state_.silent_yofy = !options_state_.silent_yofy;
+		break;
 	default:
 		break;
 	}
 	options_sync_view();
-	invalidate();
-}
-
-void App::options_apply(bool remember)
-{
-	const bool yofy_changed = mark_ != options_state_.mark ||
-		propose_last_ != options_state_.propose_last || regexs_ != options_state_.regexs ||
-		to_confirm_abbr_ != options_state_.to_confirm_abbr;
-
-	always_ask_ = options_state_.always_ask;
-	silent_yofy_ = options_state_.silent_yofy;
-	mark_ = options_state_.mark;
-	propose_last_ = options_state_.propose_last;
-	regexs_ = options_state_.regexs;
-	to_confirm_abbr_ = options_state_.to_confirm_abbr;
-
-	if (yofy_)
-	{
-		set_always_ask(always_ask_);
-		set_silent_yofy(silent_yofy_);
-		if (yofy_changed)
-			yofy_.reset(); // опции читаются при создании движка
-	}
-
-	if (std::abs(options_state_.font_size - font_size_) > 0.01F &&
-		renderer_.set_font_size(options_state_.font_size, hwnd_))
-		font_size_ = renderer_.font_size();
-
-	options_open_ = false;
-	if (remember)
-		save_settings();
-	refresh_view();
-	find_sync_view();
 	invalidate();
 }
 
@@ -3780,16 +4061,59 @@ void App::apply_word_wrap()
 	refresh_view();
 }
 
+void App::apply_mark_colors()
+{
+	// [Colors] ColorMark / ColorBackMark хранятся индексами палитры окна
+	// настроек (в оригинале — COLORREF). COLORREF = 0x00BBGGRR.
+	const auto to_color = [](std::uint32_t rgb, float alpha)
+	{
+		const float r = static_cast<float>((rgb >> 0U) & 0xFFU) / 255.0F;
+		const float g = static_cast<float>((rgb >> 8U) & 0xFFU) / 255.0F;
+		const float b = static_cast<float>((rgb >> 16U) & 0xFFU) / 255.0F;
+		return D2D1::ColorF(r, g, b, alpha);
+	};
+	const yo::OptionsColor& text = yo::options_color_at(mark_color_);
+	const yo::OptionsColor& back = yo::options_color_at(back_mark_color_);
+	renderer_.set_yofy_colors(to_color(text.rgb, 1.0F), to_color(back.rgb, 0.35F));
+}
+
 void App::show_about()
 {
+	// Текст — по AboutForm оригинала: версия, словари, счётчики, URL.
 	std::wstring text = L"Ё (yo-c-) — ёфикатор русских текстов\n\n";
-	text += L"Редактор с ёфикацией по словарю yox.dat и словарю регулярных выражений.\n";
-	text += L"Ёфикация работает построчно, неоднозначные слова предлагаются в панели вопросов.\n\n";
-	text += L"Горячие клавиши: Ctrl+F — найти, Ctrl+H — заменить, F3 / Shift+F3 — далее / назад,\n";
-	text += L"Ctrl+Shift+R — поиск по образцу (РВ), Ctrl+W / Ctrl+Q — переход по заменам,\n";
-	text += L"Ctrl+E — ёфицировать, Ctrl++ / Ctrl+- / Ctrl+0 — размер текста.\n\n";
+	text += L"Порт ёфикатора Владимира Иванова (https://github.com/vgiv/yo).\n";
+	text += L"Основной словарь: ";
+	text += widen(dictionary_display(false));
+	if (dict_ != nullptr)
+	{
+		text += L" (";
+		text += std::to_wstring(dict_->size());
+		text += L" слов)";
+	}
+	text += L"\nСловарь регулярных выражений: ";
+	text += widen(dictionary_display(true));
+	if (regexdict_ != nullptr)
+	{
+		text += L" (";
+		text += std::to_wstring(regexdict_->size());
+		text += L" правил)";
+	}
+	text += L"\n\nГорячие клавиши — как в оригинале: F9 / Ctrl+F9 — ёфицировать\n";
+	text += L"с текущей позиции / с начала текста, Ctrl+W / Ctrl+Q — переход по заменам,\n";
+	text += L"Shift+F10 — убрать выделение, Ctrl+Alt+O — опции, Ctrl+F / Ctrl+R — найти.\n\n";
+	text += L"URL: http://github.com/vgiv/yo\n";
 	text += L"Настройки хранятся в yo.ini рядом с программой.";
 	MessageBoxW(hwnd_, text.c_str(), L"О программе", MB_OK | MB_ICONINFORMATION);
+}
+
+void App::show_help_more()
+{
+	// Moreabout1 оригинала: ShellExecute(HelpURL) — страница проекта.
+	constexpr wchar_t kHelpUrl[] = L"http://github.com/vgiv/yo";
+	const HINSTANCE result =
+		ShellExecuteW(hwnd_, L"open", kHelpUrl, nullptr, nullptr, SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(result) <= 32)
+		MessageBoxW(hwnd_, kHelpUrl, L"Ещё о программе", MB_OK | MB_ICONINFORMATION);
 }
 
 void App::show_file_props()
@@ -3925,6 +4249,27 @@ std::filesystem::path find_data_file(const std::filesystem::path& name)
 
 } // namespace
 
+Options App::yofy_options() const
+{
+	// Все опции §ReadIni оригинала в одном месте: движок читает их при
+	// создании, поэтому после смены настроек он пересоздаётся.
+	Options opts;
+	opts.always_ask = always_ask_;
+	opts.mark = mark_;
+	opts.check_yo = check_yo_;
+	opts.no_var_only = no_var_only_;
+	opts.var_only = var_only_;
+	opts.propose_last = propose_last_;
+	opts.fb_format = fb_format_;
+	opts.regexs = regexs_;
+	opts.to_confirm_abbr = to_confirm_abbr_;
+	opts.to_confirm_ellipsis = to_confirm_ellipsis_;
+	opts.to_confirm_cap = to_confirm_cap_;
+	opts.lines_below = lines_below_;
+	opts.words_buffer_length = 5; // WordsBufferLength оригинала
+	return opts;
+}
+
 bool App::ensure_yoficator()
 {
 	if (yofy_)
@@ -3961,12 +4306,7 @@ bool App::ensure_yoficator()
 			regexdict_ = std::make_unique<RegexDictionary>(std::move(*regex));
 	}
 
-	Options opts;
-	opts.mark = mark_;
-	opts.always_ask = always_ask_;
-	opts.propose_last = propose_last_;
-	opts.regexs = regexs_;
-	opts.to_confirm_abbr = to_confirm_abbr_;
+	Options opts = yofy_options();
 	yofy_ = std::make_unique<Yoficator>(*dict_, regexdict_.get(), opts);
 	// Неоднозначные слова — в панель вопросов (как AskPanel оригинала).
 	yofy_->set_ask([this](const AskRequest& req) { return ask_word(req); });
@@ -3975,7 +4315,7 @@ bool App::ensure_yoficator()
 	return true;
 }
 
-void App::run_yofification()
+void App::run_yofification(bool from_start)
 {
 	if (yofy_busy_ || ask_.active || options_open_)
 		return; // проход уже идёт (или открыты настройки): повторный вход сломал бы состояние
@@ -3987,8 +4327,21 @@ void App::run_yofification()
 	if (!ensure_yoficator())
 		return;
 
-	const std::size_t from = ed_->has_selection() ? ed_->sel_begin() : 0;
-	const std::size_t to = ed_->has_selection() ? ed_->sel_end() : buf_->size();
+	// F9 — «Ёфицировать с текущей позиции»: старт от каретки (Yopos1
+	// оригинала берёт SelStart, а не начало выделения). Ctrl+F9 — с начала
+	// текста (Yobegin1: DoYoficate(0, 1)). Если что-то выделено, проход идёт
+	// по выделению: так удобнее и это не расходится с DoYoficate(LineN, PosN).
+	std::size_t from = 0;
+	std::size_t to = buf_->size();
+	if (ed_->has_selection())
+	{
+		from = ed_->sel_begin();
+		to = ed_->sel_end();
+	}
+	else if (!from_start)
+	{
+		from = ed_->caret();
+	}
 	if (from >= to)
 		return;
 

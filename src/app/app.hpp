@@ -120,7 +120,13 @@ private:
 	[[nodiscard]] std::string insert_eol_bytes() const;
 
 	bool ensure_yoficator();
-	void run_yofification();
+	// Ёфикация: F9 — с текущей позиции курсора, Ctrl+F9 — с начала текста
+	// (Yopos1 / Yobegin1 оригинала).
+	void run_yofification(bool from_start = false);
+	// Настройки движка из переменных окна — в структуру ядра.
+	[[nodiscard]] yo::Options yofy_options() const;
+	// Цвета помеченных замен ([Colors]) — в рендерер.
+	void apply_mark_colors();
 	void set_always_ask(bool on);
 	// «Ёфикация без вопросов»: неоднозначные слова пропускаются молча.
 	void set_silent_yofy(bool on);
@@ -214,6 +220,7 @@ private:
 	void options_sync_view();
 	void options_activate(int row);
 	void options_font_step(int delta);
+	void options_lines_below_step(int delta);
 	void options_move(int delta);
 	[[nodiscard]] bool options_click(float x, float y);
 	[[nodiscard]] bool options_mouse_move(float x, float y);
@@ -268,6 +275,8 @@ private:
 	void toggle_word_wrap();
 	void apply_word_wrap();
 	void show_about();
+	// «Ещё о программе» (Moreabout1): открыть HelpURL в браузере.
+	void show_help_more();
 	void show_file_props();
 	// Переход по сделанным заменам (Ctrl+W / Ctrl+Q, как FindyyFwd/FindyyBack).
 	void yofy_goto(bool forward);
@@ -327,7 +336,7 @@ private:
 	std::vector<std::pair<std::size_t, std::size_t>> yofy_marks_;
 	std::size_t yofy_mark_index_ = 0;
 	bool show_numbers_ = false;
-	bool word_wrap_ = false; // перенос по словам (в оригинале нет; по умолчанию выкл.)
+	bool word_wrap_ = true; // [Yo] WordWrap — в оригинале по умолчанию включён
 
 	// Окно настроек: значения правятся в options_state_, применяются
 	// кнопкой «Применить»/«Запомнить».
@@ -349,10 +358,24 @@ private:
 	// --- настройки (yo.ini рядом с exe, как у оригинала) ---
 	// Ключи названы как в оригинале ([Yo] AlwaysAsk, Mark, FontSize, ...),
 	// поэтому подходит и yo.ini от старого ёфикатора.
+	// Ключи [Yo] — названия и умолчания как в ReadIni/WriteIni оригинала.
 	bool mark_ = true;
 	bool propose_last_ = true;
 	bool regexs_ = true;
 	bool to_confirm_abbr_ = true;
+	bool check_yo_ = true;		   // CheckYo: «Проверять расстановку "ё"»
+	bool no_var_only_ = false;	   // NoVarOnly: только бесспорные замены
+	bool var_only_ = false;		   // VarOnly: только интерактивные замены
+	bool to_confirm_cap_ = false;  // ToConfirmCap
+	bool to_confirm_ellipsis_ = true; // ToConfirmEllipsis
+	bool fb_format_ = false;	   // FBFormat («FictionBook»)
+	int lines_below_ = 2;		   // LinesBelow (LinesBelow0 = 2)
+	bool fast_scroll_ = false;	   // FastScroll
+	bool auto_unicode_ = true;	   // AutoUnicode
+	bool to_confirm_close_ = false; // ToConfirmClose («Не подтверждать закрытие»)
+	bool show_toolbar_ = false;	   // [ToolBar] ShowToolBar
+	int mark_color_ = 0;		   // [Colors] ColorMark   (индекс палитры)
+	int back_mark_color_ = 1;	   // [Colors] ColorBackMark
 	std::wstring dict_setting_;	 // [Yo] Dictionary (пусто — искать рядом с exe)
 	std::wstring regex_setting_; // [Yo] RegExprDictionary
 	MruList mru_;

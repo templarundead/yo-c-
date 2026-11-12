@@ -654,11 +654,22 @@ piece table → итерация по pieces → encode (исходная код
 ### 6.3. Настройки: `yo.ini`
 
 - Файл лежит рядом с `yo-gui.exe` (portable-режим оригинала), кодировка
-  UTF-8, имена ключей — как в `yo.ini` старого ёфикатора (FORMATS.md §3):
-  `[Yo] AlwaysAsk`, `SilentYofy` (наше расширение), `Mark`,
-  `ProposeLast`, `RegExprs`, `ToConfirmAbbr`, `FontSize`,
-  `WindowLeft/WindowTop/WindowWidth/WindowHeight`, `Maximized`,
-  `Dictionary`, `RegExprDictionary`. Старый файл подходит без правок.
+  UTF-8, имена ключей и умолчания — как в `ReadIni`/`WriteIni` оригинала
+  (FORMATS.md §3): `[Yo] AlwaysAsk`, `Mark`, `FastScroll`, `CheckYo`,
+  `NoVarOnly`, `VarOnly`, `WordWrap`, `ProposeLast`, `FBFormat`,
+  `AutoUnicode`, `RegExprs`, `RecallLastFile`, `ToConfirmClose`,
+  `ToConfirmAbbr`, `ToConfirmEllipsis`, `ToConfirmCap`, `LinesBelow`,
+  `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`,
+  `ButtonHotKeys`, `WordsBufferLength`, геометрия окна; `[Colors]`
+  `ColorMark`/`ColorBackMark`; `[Internal]` `UTF8Warning`/`UTFLength`;
+  `[ToolBar] ShowToolBar`; `[Files] Name1..9`/`LastFileN`.
+  Наши расширения: `SilentYofy` и `Maximized`. Старый файл подходит без
+  правок.
+- Переменные окна (`always_ask_`, `check_yo_`, …) собираются в `yo::Options`
+  одной функцией `App::yofy_options()` — движок читает опции при создании,
+  поэтому после «Применить» он пересоздаётся, если изменилось что-то
+  влияющее на ёфикацию (`mark`, `check_yo`, `no_var_only`, `var_only`,
+  `propose_last`, `regexs`, `to_confirm_*`, `fb_format`, `lines_below`).
 - Разбор и запись — в ядре (`yo::Ini`, `src/core/src/ini.cpp`), поэтому
   формат покрыт тестами без Windows: секции, комментарии `;`/`#`,
   значения по умолчанию, мусор в числах, повторная запись ключа.
@@ -670,8 +681,12 @@ piece table → итерация по pieces → encode (исходная код
   разбор и поведение списка — в ядре (`yo::MruList`, `src/core/src/mru.cpp`),
   поэтому формат и FIFO-порядок покрыты тестами без Windows.
 - Раскладка окна настроек — тоже в ядре (`yo::layout_options`,
-  `src/core/src/optionspanel.cpp`): строки, кнопки и попадание кликов
-  проверяются тестами, GUI только рисует и применяет значения.
+  `src/core/src/optionspanel.cpp`): три вкладки («Ёфикация», «Редактор»,
+  «Словари»), строки, «−»/«+» у чисел, кнопки bOK/bCancel/bOKSave и
+  попадание кликов проверяются тестами, GUI только рисует и применяет
+  значения. Состав строк вкладок «Ёфикация» и «Редактор» — построчный
+  перенос `OptionsPage.dfm` (порядок и подписи), это фиксирует тест
+  `настройки: вкладка «…» — пункты и подписи оригинала`.
 - Файл читается при старте (до создания окна — из него берётся геометрия),
   пишется при изменении настроек (шрифт, `AlwaysAsk`, `SilentYofy`) и при
   закрытии окна. Неизвестные ключи сохраняются: файл сначала читается
@@ -693,7 +708,10 @@ piece table → итерация по pieces → encode (исходная код
 - Подсветка — только для видимых строк (`find_in_line` на строку), поэтому
   стоимость не зависит от размера файла. Полный проход (`find_all`) нужен
   лишь для счётчика «N из M» по Enter/F3, а не на каждый введённый символ.
-- Замены ёфикации подсвечиваются отдельно (зелёным, как `Mark` оригинала):
+- Цвета пометки замен берутся из `[Colors]` (`ColorMark` — линия под
+  словом, `ColorBackMark` — фон ряда): палитра из шести цветов живёт в ядре
+  (`yo::options_colors`), индексы хранятся в `OptionsState`/`yo.ini`.
+- Замены ёфикации подсвечиваются отдельно (фон + линия, как `Mark` оригинала):
   после прохода сканируется обработанный диапазон на `ё`/`Ё` (2 байта),
   смещения не меняются, потому что е→ё в UTF-8 равной длины.
 
