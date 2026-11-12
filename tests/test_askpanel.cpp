@@ -5,7 +5,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 using namespace yo;
 
@@ -73,7 +75,8 @@ TEST_CASE("панель вопросов: тексты вариантов и п�
 	req.word2 = u("всё");
 	AskTexts texts = make_ask_texts(req);
 	CHECK(texts.variants == "1  Е: все          2  Ё: всё");
-	CHECK(texts.reason == "выберите написание");
+	// Заголовок панели — как в оригинале («Выберите верный вариант»).
+	CHECK(texts.reason == "Выберите верный вариант");
 
 	SECTION("без варианта с ё второй кнопки в тексте нет")
 	{
@@ -221,5 +224,81 @@ TEST_CASE("панель вопросов: кнопки достаточно кр
 	{
 		CHECK(b.h >= in.line_height + 2.0F * 3.0F); // строка текста + отступы
 		CHECK(b.w > in.char_width * 4.0F);
+	}
+}
+
+TEST_CASE("панель вопросов: полоса снизу, кнопки в две колонки", "[askpanel]")
+{
+	// Как AskPanel оригинала: полоса во всю ширину над строкой состояния,
+	// заголовок по центру, кнопки подписаны самими вариантами слова.
+	AskLayoutInput in = base_input();
+	in.bottom_bar = true;
+	in.word1 = "передохнем";
+	in.word2 = "передохнём";
+	in.context = "дина нам бог послал, при таком-то передохнем: А кричит";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.bottom);
+	CHECK(layout.x == 0.0F);
+	CHECK(layout.w == in.client_w);
+	CHECK(layout.y + layout.h == in.client_h - in.status_h);
+
+	// Заголовок — первая строка, акцентом (kind == title).
+	REQUIRE(!layout.rows.empty());
+	CHECK(layout.rows.front().text == in.reason);
+	CHECK(layout.rows.front().kind == AskRowKind::title);
+	// Предложение с обрабатываемым словом тоже на панели.
+	bool has_context = false;
+	for (const AskLayout::Row& row : layout.rows)
+	{
+		if (row.text.find("передохнем") != std::string::npos)
+			has_context = true;
+	}
+	CHECK(has_context);
+
+	// Семь кнопок, две колонки по x.
+	REQUIRE(layout.buttons.size() == 7);
+	std::vector<float> xs;
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		if (std::find(xs.begin(), xs.end(), b.x) == xs.end())
+			xs.push_back(b.x);
+	}
+	CHECK(xs.size() == 2);
+
+	// Подписи: слово + клавиша.
+	auto label_of = [&](AskChoice choice)
+	{
+		for (const AskButtonBox& b : layout.buttons)
+			if (b.choice == choice)
+				return b.label;
+		return std::string();
+	};
+	CHECK(label_of(AskChoice::ye) == "передохнем [1]");
+	CHECK(label_of(AskChoice::yo) == "передохнём [2]");
+	CHECK(label_of(AskChoice::cancel) == "Прервать [Esc]");
+}
+
+TEST_CASE("панель вопросов: полоса не вылезает на маленьком окне", "[askpanel]")
+{
+	// Очень маленькое окно: полоса не помещается — раскладка обязана
+	// остаться видимой (плавающая панель), иначе спросить будет негде.
+	AskLayoutInput in = base_input();
+	in.bottom_bar = true;
+	in.word1 = "передохнем";
+	in.word2 = "передохнём";
+	in.client_w = 360.0F;
+	in.client_h = 240.0F;
+	in.context = "короткая фраза";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.h > 0.0F);
+	CHECK(layout.y >= 0.0F);
+	CHECK(layout.y + layout.h <= in.client_h);
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		CHECK(b.x >= 0.0F);
+		CHECK(b.x + b.w <= in.client_w);
+		CHECK(b.y + b.h <= in.client_h);
 	}
 }

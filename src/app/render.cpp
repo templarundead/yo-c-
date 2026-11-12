@@ -53,6 +53,11 @@ void Renderer::shutdown()
 		fmt_ui_->Release();
 		fmt_ui_ = nullptr;
 	}
+	if (fmt_center_ != nullptr)
+	{
+		fmt_center_->Release();
+		fmt_center_ = nullptr;
+	}
 	if (rt_ != nullptr)
 	{
 		rt_->Release();
@@ -116,6 +121,11 @@ bool Renderer::measure_font(HWND hwnd)
 		fmt_ui_->Release();
 		fmt_ui_ = nullptr;
 	}
+	if (fmt_center_ != nullptr)
+	{
+		fmt_center_->Release();
+		fmt_center_ = nullptr;
+	}
 	// Моноширинный шрифт: Cascadia Mono есть в Windows 11/10 (Terminal),
 	// Consolas — надёжный запасной вариант, дальше DirectWrite сам подберёт.
 	const wchar_t* families[] = { L"Cascadia Mono", L"Consolas", L"Courier New" };
@@ -141,6 +151,15 @@ bool Renderer::measure_font(HWND hwnd)
 	fmt_ui_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 	fmt_ui_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+	// Панель вопросов: подписи и строки по центру, как в оригинале.
+	if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+										DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0F, L"ru-ru",
+										&fmt_center_)))
+		return false;
+	fmt_center_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+	fmt_center_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+	fmt_center_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
 	// Ширина символа: 64 одинаковых глифа делим на 64.
 	const std::wstring probe(64, L'0');
 	IDWriteTextLayout* layout = nullptr;
@@ -155,6 +174,23 @@ bool Renderer::measure_font(HWND hwnd)
 
 	char_w_ = std::max(1.0F, tm.widthIncludingTrailingWhitespace / 64.0F);
 	line_h_ = std::max(1.0F, std::ceil(tm.height));
+
+	// Метрики шрифта интерфейса: им меряются меню и панель вопросов, и они
+	// не должны меняться вместе с размером текста.
+	{
+		IDWriteTextLayout* ui_layout = nullptr;
+		if (SUCCEEDED(dwrite_->CreateTextLayout(probe.c_str(), static_cast<UINT32>(probe.size()), fmt_ui_,
+												4096.0F, 4096.0F, &ui_layout)))
+		{
+			DWRITE_TEXT_METRICS um{};
+			if (SUCCEEDED(ui_layout->GetMetrics(&um)))
+			{
+				ui_char_w_ = std::max(1.0F, um.widthIncludingTrailingWhitespace / 64.0F);
+				ui_line_h_ = std::max(1.0F, std::ceil(um.height));
+			}
+			ui_layout->Release();
+		}
+	}
 
 	// Всё рисуется в DIP, а целевой буфер сам масштабирует DIP → пиксели
 	// (SetDpi). Умножать размеры на dpi_scale_ нельзя: полоса статуса уезжала
@@ -444,13 +480,17 @@ void Renderer::draw_menu_bar(const MenuBarView& bar)
 
 void Renderer::draw_ask(const AskView& view)
 {
-	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
+	if (rt_ == nullptr || fmt_ui_ == nullptr || fmt_center_ == nullptr || brush_ == nullptr)
 		return;
 
+	// Фон полосы и линия сверху: панель идёт во всю ширину окна, как
+	// AskPanel оригинала.
 	brush_->SetColor(theme_.gutter);
 	rt_->FillRectangle(view.panel, brush_);
 	brush_->SetColor(theme_.accent);
-	rt_->DrawRectangle(view.panel, brush_, 1.0F);
+	rt_->FillRectangle(D2D1::RectF(view.panel.left, view.panel.top, view.panel.right,
+								   view.panel.top + 1.0F),
+					   brush_);
 
 	for (const AskRow& row : view.rows)
 	{
@@ -459,32 +499,37 @@ void Renderer::draw_ask(const AskView& view)
 		const D2D1_COLOR_F base = row.kind == AskKind::accent   ? theme_.accent
 								  : row.kind == AskKind::dim ? theme_.status_fg
 															 : theme_.text;
-		if (row.has_hot && row.hot_from < row.hot_to && row.hot_to <= row.text.size())
+		const bool hot = row.has_hot && row.hot_from < row.hot_to && row.hot_to <= row.text.size();
+		if (!hot)
 		{
-			// Строка с обрабатываемым словом: обычный текст, слово — красным.
-			const std::wstring prefix = row.text.substr(0, row.hot_from);
-			const std::wstring word = row.text.substr(row.hot_from, row.hot_to - row.hot_from);
-			const std::wstring suffix = row.text.substr(row.hot_to);
-			const auto draw = [&](const std::wstring& part, float left, float right, const D2D1_COLOR_F& color)
-			{
-				if (part.empty() || right <= left)
-					return;
-				brush_->SetColor(color);
-				rt_->DrawTextW(part.c_str(), static_cast<UINT32>(part.size()), fmt_ui_,
-							   D2D1::RectF(left, row.rect.top, right, row.rect.bottom), brush_,
-							   D2D1_DRAW_TEXT_OPTIONS_CLIP);
-			};
-			const float x0 = row.rect.left;
-			const float x1 = x0 + measure_ui(prefix);
-			const float x2 = x1 + measure_ui(word);
-			draw(prefix, x0, x1, base);
-			draw(word, x1, x2 + 1.0F, D2D1::ColorF(0.95F, 0.36F, 0.36F));
-			draw(suffix, x2, row.rect.right, base);
+			brush_->SetColor(base);
+			rt_->DrawTextW(row.text.c_str(), static_cast<UINT32>(row.text.size()), fmt_center_,
+						   row.rect, brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 			continue;
 		}
-		brush_->SetColor(base);
-		rt_->DrawTextW(row.text.c_str(), static_cast<UINT32>(row.text.size()), fmt_ui_, row.rect,
-					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+		// Строка с обрабатываемым словом: она центрируется вручную, чтобы
+		// слово можно было нарисовать красным на своём месте.
+		const std::wstring prefix = row.text.substr(0, row.hot_from);
+		const std::wstring word = row.text.substr(row.hot_from, row.hot_to - row.hot_from);
+		const std::wstring suffix = row.text.substr(row.hot_to);
+		const float w_prefix = measure_ui(prefix);
+		const float w_word = measure_ui(word);
+		const float w_total = w_prefix + w_word + measure_ui(suffix);
+		const float x0 = row.rect.left +
+						 std::max(0.0F, (row.rect.right - row.rect.left - w_total) * 0.5F);
+		const auto draw = [&](const std::wstring& part, float left, float right, const D2D1_COLOR_F& color)
+		{
+			if (part.empty() || right <= left)
+				return;
+			brush_->SetColor(color);
+			rt_->DrawTextW(part.c_str(), static_cast<UINT32>(part.size()), fmt_ui_,
+						   D2D1::RectF(left, row.rect.top, right, row.rect.bottom), brush_,
+						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		};
+		draw(prefix, x0, x0 + w_prefix, base);
+		draw(word, x0 + w_prefix, x0 + w_prefix + w_word + 1.0F, D2D1::ColorF(0.95F, 0.36F, 0.36F));
+		draw(suffix, x0 + w_prefix + w_word, row.rect.right, base);
 	}
 
 	for (const AskButtonView& b : view.buttons)
@@ -495,7 +540,7 @@ void Renderer::draw_ask(const AskView& view)
 		brush_->SetColor(lit ? theme_.accent : theme_.status_fg);
 		rt_->DrawRectangle(b.rect, brush_, 1.0F);
 		brush_->SetColor(lit ? theme_.text : theme_.status_fg);
-		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_ui_,
+		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_,
 					   D2D1::RectF(b.rect.left + padding_ * 0.5F, b.rect.top,
 								   b.rect.right - padding_ * 0.5F, b.rect.bottom),
 					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -515,8 +560,10 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	rt_->SetTransform(D2D1::Matrix3x2F::Identity());
 	rt_->Clear(theme_.bg);
 
+	// Полоса вопросов внизу отнимает место у текста, как и строка поиска.
+	const float ask_inset = ask != nullptr ? ask->bottom_inset : 0.0F;
 	const float text_h = std::max(
-		0.0F, height_dip_ - bar_h_ - status_h_ - (show_find_bar ? find_h_ : 0.0F));
+		0.0F, height_dip_ - bar_h_ - status_h_ - (show_find_bar ? find_h_ : 0.0F) - ask_inset);
 	const float text_y0 = bar_h_;
 	ed.set_viewport(text_area_width(), text_h);
 

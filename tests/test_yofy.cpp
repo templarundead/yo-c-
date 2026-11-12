@@ -258,7 +258,8 @@ TEST_CASE("ёфикация: AskRequest знает, где слово в док�
 	CHECK(r.length == 3); // «все» — три единицы UTF-16
 
 	const std::string line = "И вот мы все еще не пришли домой.";
-	const std::u16string u16 = utf8_to_utf16(line);
-	REQUIRE(r.offset + r.length <= u16.size());
-	CHECK(utf16_to_utf8(std::u16string_view(u16).substr(r.offset, r.length)) == "все");
+	const UString u32 = decode_line({ reinterpret_cast<const std::uint8_t*>(line.data()), line.size() },
+		Encoding::utf8);
+	REQUIRE(r.offset + r.length <= u32.size());
+	CHECK(encode_line(UString(u32.substr(r.offset, r.length)), Encoding::utf8) == "все");
 }

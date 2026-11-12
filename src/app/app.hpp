@@ -140,6 +140,7 @@ private:
 		std::size_t line = 0;	   // строка, на которой спросили
 		RECT panel{};
 		bool has_panel = false;
+		float inset = 0.0F;  // высота полосы снизу (DIP), 0 — панель плавающая
 		std::vector<AskRow> rows;  // текст панели (геометрия уже посчитана)
 		std::vector<AskButton> buttons;
 		int hot = -1;  // кнопка под мышью (-1 — нет)

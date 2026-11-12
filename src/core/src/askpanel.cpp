@@ -22,6 +22,221 @@ void pop_back_cp(std::string& s)
 	}
 }
 
+// Подрезать строку по ширине с многоточием, не разрывая символы UTF-8.
+std::string clip_to_width(std::string text, float max_w, const AskMeasureFn& measure, float cw)
+{
+	const auto width = [&](std::string_view t) {
+		if (measure)
+			return measure(t);
+		return static_cast<float>(t.size()) * cw;
+	};
+	if (width(text) <= max_w)
+		return text;
+	const float whole = std::max(1.0F, width(text));
+	const auto limit =
+		static_cast<std::size_t>(static_cast<float>(text.size()) * (max_w / whole));
+	std::string cut;
+	cut.reserve(std::min(text.size(), std::max<std::size_t>(1, limit)));
+	for (std::size_t i = 0; i < text.size();)
+	{
+		const auto lead = static_cast<unsigned char>(text[i]);
+		std::size_t len = lead < 0x80U ? 1
+						: (lead & 0xE0U) == 0xC0U ? 2
+						: (lead & 0xF0U) == 0xE0U ? 3
+						: (lead & 0xF8U) == 0xF0U ? 4
+												  : 1;
+		if (i + len > text.size())
+			len = 1;
+		if (cut.size() + len > limit)
+			break;
+		cut.append(text, i, len);
+		i += len;
+	}
+	while (!cut.empty() && width(cut) > max_w)
+		pop_back_cp(cut);
+	return cut + "…";
+}
+
+// Панель как в оригинале: полоса во всю ширину над строкой состояния,
+// заголовок по центру, кнопки в две колонки с вариантами слова.
+AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measure)
+{
+	AskLayout out;
+	const float pad = std::max(4.0F, in.padding);
+	const float gap = std::max(3.0F, pad * 0.5F);
+	const float lh = std::max(1.0F, in.line_height);
+	const float cw = std::max(1.0F, in.char_width);
+	const float client_w = std::max(1.0F, in.client_w);
+	const float client_h = std::max(1.0F, in.client_h);
+	const float avail_w = std::max(40.0F, client_w - 2.0F * pad);
+
+	const auto width = [&](std::string_view text) {
+		if (measure)
+			return measure(text);
+		return static_cast<float>(text.size()) * cw;
+	};
+
+	struct Entry
+	{
+		AskChoice choice = AskChoice::cancel;
+		std::string label;
+	};
+
+	const std::string& w1 = in.word1;
+	const std::string& w2 = in.word2;
+	const auto key = [](std::string text, const char* k)
+	{
+		text += " [";
+		text += k;
+		text += "]";
+		return text;
+	};
+
+	// Левая колонка — выбор написания и откат, правая — «всегда» и выход.
+	std::vector<Entry> left;
+	left.push_back({ AskChoice::ye, key(w1.empty() ? std::string("Е") : w1, "1") });
+	if (!w2.empty())
+		left.push_back({ AskChoice::yo, key(w2, "2") });
+	left.push_back({ AskChoice::undo, key(std::string("Откат"), "6") });
+
+	std::vector<Entry> right = {
+		{ AskChoice::ye_all, key(std::string("Всегда Е"), "3") },
+		{ AskChoice::yo_all, key(std::string("Всегда Ё"), "4") },
+		{ AskChoice::skip, key(std::string("Пропустить"), "5") },
+		{ AskChoice::cancel, key(std::string("Прервать"), "Esc") },
+	};
+
+	const auto column_w = [&](const std::vector<Entry>& column)
+	{
+		float w = 0.0F;
+		for (const Entry& e : column)
+			w = std::max(w, width(e.label));
+		return std::min(avail_w, std::max(14.0F * cw, w + 3.0F * gap));
+	};
+
+	// Две колонки; если не влезают — одна, но кнопки остаются кликабельными.
+	bool two_columns = column_w(left) + 2.0F * gap + column_w(right) <= avail_w;
+	float col0_w = column_w(left);
+	float col1_w = column_w(right);
+	std::vector<Entry> single;
+	if (!two_columns)
+	{
+		for (const Entry& e : left)
+			single.push_back(e);
+		for (const Entry& e : right)
+			single.push_back(e);
+		col0_w = column_w(single);
+	}
+	const std::size_t rows = two_columns ? std::max(left.size(), right.size()) : single.size();
+
+	// Строки текста: заголовок и предложение с обрабатываемым словом.
+	std::string title = clip_to_width(in.reason, avail_w, measure, cw);
+	std::vector<std::string> context;
+	{
+		std::size_t begin = 0;
+		const std::string& ctx = in.context;
+		while (begin <= ctx.size() && !ctx.empty())
+		{
+			const std::size_t end = ctx.find('\n', begin);
+			const std::string part =
+				end == std::string::npos ? ctx.substr(begin) : ctx.substr(begin, end - begin);
+			context.push_back(clip_to_width(part, avail_w, measure, cw));
+			if (end == std::string::npos)
+				break;
+			begin = end + 1;
+			if (context.size() > 8)
+				break; // предохранитель: полоса не должна закрыть весь текст
+		}
+	}
+
+	const float button_h = lh + 2.0F * gap;
+	float h = pad;
+	if (!title.empty())
+		h += lh + gap;
+	h += static_cast<float>(context.size()) * lh;
+	if (!context.empty())
+		h += gap;
+	h += static_cast<float>(rows) * (button_h + gap) + pad - gap;
+
+	// Если полоса не помещается в окно, честнее нарисовать компактную
+	// плавающую панель: её App покажет по центру.
+	if (h > client_h - in.status_h - pad * 2.0F)
+		return out;
+
+	out.visible = true;
+	out.bottom = true;
+	out.x = 0.0F;
+	out.w = client_w;
+	out.h = h;
+	out.y = std::max(0.0F, client_h - in.status_h - h);
+
+	float y = out.y + pad;
+	if (!title.empty())
+	{
+		AskLayout::Row row;
+		row.text = title;
+		row.y = y;
+		row.h = lh;
+		row.kind = AskRowKind::title;
+		out.rows.push_back(std::move(row));
+		y += lh + gap;
+	}
+	for (const std::string& text : context)
+	{
+		AskLayout::Row row;
+		row.text = text;
+		row.y = y;
+		row.h = lh;
+		row.kind = AskRowKind::context;
+		out.rows.push_back(std::move(row));
+		y += lh;
+	}
+	if (!context.empty())
+		y += gap;
+
+	const auto add_button = [&](const Entry& e, float x, float y0, float w)
+	{
+		AskButtonBox box;
+		box.choice = e.choice;
+		box.label = e.label;
+		box.x = x;
+		box.y = y0;
+		box.w = w;
+		box.h = button_h;
+		out.buttons.push_back(std::move(box));
+	};
+
+	if (two_columns)
+	{
+		const float total = col0_w + 2.0F * gap + col1_w;
+		const float x0 = std::max(pad, (client_w - total) * 0.5F);
+		const float x1 = x0 + col0_w + 2.0F * gap;
+		float yl = y;
+		for (const Entry& e : left)
+		{
+			add_button(e, x0, yl, col0_w);
+			yl += button_h + gap;
+		}
+		float yr = y;
+		for (const Entry& e : right)
+		{
+			add_button(e, x1, yr, col1_w);
+			yr += button_h + gap;
+		}
+	}
+	else
+	{
+		const float x0 = std::max(pad, (client_w - col0_w) * 0.5F);
+		float y1 = y;
+		for (const Entry& e : single)
+		{
+			add_button(e, x0, y1, col0_w);
+			y1 += button_h + gap;
+		}
+	}
+	return out;
+}
+
 } // namespace
 
 AskTexts make_ask_texts(const AskRequest& req)
@@ -41,7 +256,7 @@ AskTexts make_ask_texts(const AskRequest& req)
 	else if (req.wrong_ye)
 		texts.reason = "вероятно, здесь должна быть Ё";
 	else
-		texts.reason = "выберите написание";
+		texts.reason = "Выберите верный вариант";
 	return texts;
 }
 
@@ -79,6 +294,13 @@ int AskLayout::index_of(AskChoice choice) const noexcept
 
 AskLayout layout_ask_panel(const AskLayoutInput& in, const AskMeasureFn& measure)
 {
+	if (in.bottom_bar)
+	{
+		AskLayout bottom = layout_bottom_bar(in, measure);
+		if (bottom.visible)
+			return bottom;
+	}
+
 	AskLayout out;
 	const float pad = std::max(2.0F, in.padding);
 	const float gap = std::max(2.0F, pad * 0.5F);
@@ -99,32 +321,7 @@ AskLayout layout_ask_panel(const AskLayoutInput& in, const AskMeasureFn& measure
 	const float max_inner =
 		std::max(24.0F * cw, std::min(client_w - 2.0F * pad, max_chars * cw) - 2.0F * pad);
 	const auto clip = [&](std::string text) {
-		if (width(text) <= max_inner)
-			return text;
-		const float whole = std::max(1.0F, width(text));
-		const auto limit = static_cast<std::size_t>(
-			static_cast<float>(text.size()) * (max_inner / whole));
-		// Режем по границам кодпоинтов: незавершённый символ в UTF-8 недопустим.
-		std::string cut;
-		cut.reserve(std::min(text.size(), std::max<std::size_t>(1, limit)));
-		for (std::size_t i = 0; i < text.size();)
-		{
-			const auto lead = static_cast<unsigned char>(text[i]);
-			std::size_t len = lead < 0x80U	 ? 1
-							  : (lead & 0xE0U) == 0xC0U ? 2
-							  : (lead & 0xF0U) == 0xE0U ? 3
-							  : (lead & 0xF8U) == 0xF0U ? 4
-														: 1;
-			if (i + len > text.size())
-				len = 1;
-			if (cut.size() + len > limit)
-				break;
-			cut.append(text, i, len);
-			i += len;
-		}
-		while (!cut.empty() && width(cut) > max_inner)
-			pop_back_cp(cut);
-		return cut + "…";
+		return clip_to_width(std::move(text), max_inner, measure, cw);
 	};
 
 	// Контекст — предложение с обрабатываемым словом; он может занимать
@@ -211,12 +408,15 @@ AskLayout layout_ask_panel(const AskLayoutInput& in, const AskMeasureFn& measure
 
 	const float text_left = out.x + pad;
 	float y = out.y + pad;
-	for (const std::string& text : texts)
+	for (std::size_t i = 0; i < texts.size(); ++i)
 	{
 		AskLayout::Row row;
-		row.text = text;
+		row.text = texts[i];
 		row.y = y;
 		row.h = lh;
+		// Первая строка — варианты слова, вторая — причина/заголовок,
+		// остальные — предложение с обрабатываемым словом.
+		row.kind = i == 0 ? AskRowKind::variant : (i == 1 ? AskRowKind::title : AskRowKind::context);
 		out.rows.push_back(std::move(row));
 		y += lh;
 	}

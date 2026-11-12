@@ -1,5 +1,6 @@
 #include "app.hpp"
 
+#include "yo/codec.hpp"
 #include "yo/env.hpp"
 #include "yo/utf.hpp"
 #include "yo/mapped.hpp"
@@ -536,7 +537,9 @@ void App::layout_menus()
 	if (open_menu_ >= 0 && static_cast<std::size_t>(open_menu_) < menus_.size())
 	{
 		const MenuDef& def = menus_[static_cast<std::size_t>(open_menu_)];
-		const float row_h = std::max(20.0F, renderer_.line_height());
+		// Высота строки меню — от шрифта интерфейса: Ctrl+± не должен
+		// растягивать выпадающие списки.
+		const float row_h = std::max(20.0F, renderer_.ui_line_height() + 8.0F);
 		// Ширина пункта: подпись + сочетание клавиш справа (в метке они
 		// разделены табуляцией, и таб не должен считаться нулевой шириной).
 		const auto label_width = [this](const std::wstring& label)
@@ -1378,8 +1381,10 @@ void App::on_context_menu(int x, int y)
 	if (ask_.active)
 		return;
 
+	// WM_CONTEXTMENU присылает ЭКРАННЫЕ координаты в физических пикселях:
+	// масштабировать их ещё раз нельзя, иначе меню уезжает вниз-вправо.
 	const float scale = std::max(1.0F, renderer_.dpi_scale());
-	POINT pt{ static_cast<LONG>(static_cast<float>(x) * scale), static_cast<LONG>(static_cast<float>(y) * scale) };
+	POINT pt{ static_cast<LONG>(x), static_cast<LONG>(y) };
 	if (x == -1 && y == -1)
 	{
 		// Меню с клавиатуры (Shift+F10 / клавиша «меню»): ставим у курсора.
@@ -1887,6 +1892,7 @@ void App::ask_build_view()
 	ask_.rows.clear();
 	ask_.buttons.clear();
 	ask_.has_panel = false;
+	ask_.inset = 0.0F;
 
 	RECT rc{};
 	GetClientRect(hwnd_, &rc);
@@ -1908,13 +1914,20 @@ void App::ask_build_view()
 	in.client_h = client_h;
 	in.status_h = renderer_.status_height();
 	in.padding = renderer_.padding();
-	in.line_height = renderer_.line_height();
-	in.char_width = renderer_.char_width();
+	// Меню, панель вопросов и статус рисуются шрифтом интерфейса и не должны
+	// расти вместе с текстом: Ctrl+± меняет только текст.
+	in.line_height = renderer_.ui_line_height();
+	in.char_width = renderer_.ui_char_width();
 	in.variants = texts.variants;
 	in.reason = texts.reason;
+	// Оригинал показывает панель полосой во всю ширину над статусом,
+	// а не плавающим окошком по центру.
+	in.bottom_bar = true;
+	in.word1 = encode_line(ask_.req.word1, Encoding::utf8);
+	in.word2 = encode_line(ask_.req.word2, Encoding::utf8);
 
-	// Слово, о котором спрашивают: смещения в AskRequest — в единицах UTF-16
-	// внутри строки, а подсветке нужны байты всего текста.
+	// Слово, о котором спрашивают: смещения в AskRequest — в кодовых точках
+	// внутри строки (UString), а подсветке нужны байты всего текста.
 	const std::size_t ask_line = ask_.req.line;
 	ask_.has_word = false;
 	ask_.word_from = 0;
@@ -1922,12 +1935,14 @@ void App::ask_build_view()
 	ask_.word_text.clear();
 	if (ask_line < buf_->line_count())
 	{
-		const std::string_view bytes = buf_->line_text(ask_.req.line);
-		const std::u16string u16 = utf8_to_utf16(bytes);
-		const std::size_t from16 = std::min(ask_.req.offset, u16.size());
-		const std::size_t to16 = std::min(ask_.req.offset + ask_.req.length, u16.size());
-		const std::size_t byte_from = utf16_to_utf8(std::u16string_view(u16).substr(0, from16)).size();
-		const std::string word8 = utf16_to_utf8(std::u16string_view(u16).substr(from16, to16 - from16));
+		const std::string_view text = buf_->line_text(ask_.req.line);
+		const UString u32 = decode_line(
+			{ reinterpret_cast<const std::uint8_t*>(text.data()), text.size() }, Encoding::utf8);
+		const std::size_t from32 = std::min(ask_.req.offset, u32.size());
+		const std::size_t to32 = std::min(ask_.req.offset + ask_.req.length, u32.size());
+		const std::size_t byte_from =
+			encode_line(UString(u32.substr(0, from32)), Encoding::utf8).size();
+		const std::string word8 = encode_line(UString(u32.substr(from32, to32 - from32)), Encoding::utf8);
 		const std::size_t byte_to = byte_from + word8.size();
 		if (byte_to > byte_from)
 		{
@@ -1940,8 +1955,7 @@ void App::ask_build_view()
 
 	// В панели — всё предложение с этим словом: по одному слову невозможно
 	// понять, где Е, а где Ё.
-	const float max_context_w =
-		std::max(220.0F, std::min(std::max(220.0F, in.client_w - 96.0F), 640.0F));
+	const float max_context_w = std::max(220.0F, in.client_w - 2.0F * renderer_.padding() - 16.0F);
 	std::string context = sentence_around(*buf_, ask_line);
 	context = wrap_text(context, max_context_w,
 		[this](const std::string& text) { return renderer_.measure_ui(widen(text)); });
@@ -1953,12 +1967,15 @@ void App::ask_build_view()
 	if (!layout.visible)
 		return;
 
-	// Панель ставим по центру текстовой области. Прижатая к низу, она терялась
-	// среди текста, а программа в это время ждала ответа — со стороны это
-	// выглядело как зависание.
-	const float area_h =
-		std::max(1.0F, client_h - renderer_.status_height() - renderer_.bar_height());
-	const float dy = std::max(0.0F, (area_h - layout.h) * 0.5F) - layout.y;
+	// Полоса снизу уже стоит там, где надо; компактную панель (окно не
+	// поместилось) ставим по центру, чтобы её не приняли за зависание.
+	float dy = 0.0F;
+	if (!layout.bottom)
+	{
+		const float area_h =
+			std::max(1.0F, client_h - renderer_.status_height() - renderer_.bar_height());
+		dy = std::max(0.0F, (area_h - layout.h) * 0.5F) - layout.y;
+	}
 
 	const float pad = std::max(2.0F, renderer_.padding());
 	const float left = layout.x + pad;
@@ -1967,7 +1984,9 @@ void App::ask_build_view()
 	{
 		AskRow row;
 		row.text = widen(layout.rows[i].text);
-		row.kind = i == 0 ? AskKind::normal : (i == 1 ? AskKind::accent : AskKind::dim);
+		row.kind = layout.rows[i].kind == AskRowKind::title	  ? AskKind::accent
+				   : layout.rows[i].kind == AskRowKind::variant ? AskKind::dim
+																: AskKind::normal;
 		row.rect = D2D1::RectF(left, layout.rows[i].y + dy, right, layout.rows[i].y + dy + layout.rows[i].h);
 		// Слово внутри предложения выделяем и в панели — видно, о чём вопрос.
 		if (!ask_.word_text.empty())
@@ -2000,6 +2019,24 @@ void App::ask_build_view()
 	ask_.panel.right = static_cast<LONG>(layout.x + layout.w);
 	ask_.panel.bottom = static_cast<LONG>(layout.y + dy + layout.h);
 	ask_.has_panel = true;
+	// Полоса снизу отнимает место у текста: строка с вопросом должна быть
+	// видна над ней, а не под ней.
+	ask_.inset = layout.bottom ? layout.h : 0.0F;
+	ed_->set_viewport(renderer_.text_area_width(),
+		std::max(1.0F, renderer_.text_area_height() - ask_.inset));
+	scroll_line_into_view(ask_.line);
+	// Строку с вопросом ставим в самый низ видимой области — так это
+	// выглядит в оригинале: предложение видно прямо над панелью.
+	if (ask_.inset > 0.0F)
+	{
+		const auto first = static_cast<long long>(ed_->first_visible_line());
+		const auto count =
+			std::max<long long>(1, static_cast<long long>(ed_->visible_line_count()));
+		const auto target = static_cast<long long>(ask_.line);
+		const auto delta = target - (first + count - 1);
+		if (delta != 0)
+			ed_->scroll_lines(static_cast<long>(delta));
+	}
 }
 
 AskView App::ask_view() const
@@ -2013,6 +2050,7 @@ AskView App::ask_view() const
 	view.has_word = ask_.has_word;
 	view.word_from = ask_.word_from;
 	view.word_to = ask_.word_to;
+	view.bottom_inset = ask_.inset;
 	view.buttons.reserve(ask_.buttons.size());
 	for (const AskButton& b : ask_.buttons)
 	{

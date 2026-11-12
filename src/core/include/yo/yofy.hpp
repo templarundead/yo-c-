@@ -60,8 +60,8 @@ struct AskRequest
 	// Где слово лежит в документе: GUI подсвечивает его в тексте и показывает
 	// предложение вокруг (как AskPanel оригинала).
 	std::size_t line = 0;		// номер строки
-	std::size_t offset = 0;		// начало слова в строке, единицы UTF-16
-	std::size_t length = 0;		// длина слова, единицы UTF-16
+	std::size_t offset = 0;		// начало слова в строке, кодовые точки (UString)
+	std::size_t length = 0;		// длина слова, кодовые точки (UString)
 };
 
 using AskFn = std::function<AskAnswer(const AskRequest&)>;

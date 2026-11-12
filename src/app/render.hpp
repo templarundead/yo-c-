@@ -59,6 +59,9 @@ struct AskView
 	bool has_word = false;
 	std::size_t word_from = 0;
 	std::size_t word_to = 0;
+	// Панель-полоса снизу отнимает у текста эту высоту (DIP): строка
+	// с вопросом должна оставаться видимой над ней.
+	float bottom_inset = 0.0F;
 };
 
 // Верхняя строка меню рисуется нами: системное меню на тёмной теме остаётся
@@ -118,6 +121,11 @@ public:
 	[[nodiscard]] float padding() const noexcept { return padding_; }
 	[[nodiscard]] float line_height() const noexcept { return line_h_; }
 
+	// Метрики шрифта интерфейса. Меню, панель вопросов и статус рисуются
+	// им и НЕ масштабируются вместе с текстом (Ctrl+± меняет только текст).
+	[[nodiscard]] float ui_line_height() const noexcept { return ui_line_h_; }
+	[[nodiscard]] float ui_char_width() const noexcept { return ui_char_w_; }
+
 	// Высота нижней полосы (статус + строка поиска) в пикселях.
 	[[nodiscard]] float status_height() const noexcept;
 	[[nodiscard]] float find_height() const noexcept;
@@ -156,7 +164,8 @@ private:
 	ID2D1HwndRenderTarget* rt_ = nullptr;
 	IDWriteFactory* dwrite_ = nullptr;
 	IDWriteTextFormat* fmt_ = nullptr;		// основной текст
-	IDWriteTextFormat* fmt_ui_ = nullptr;	// статус/поиск
+	IDWriteTextFormat* fmt_ui_ = nullptr;	// статус/поиск/меню
+	IDWriteTextFormat* fmt_center_ = nullptr; // панель вопросов: по центру
 	ID2D1SolidColorBrush* brush_ = nullptr;
 	ID2D1SolidColorBrush* accent_brush_ = nullptr; // подсветка ё
 	ID2D1SolidColorBrush* dim_brush_ = nullptr;	   // затемнение под панелью вопросов
@@ -169,6 +178,8 @@ private:
 	float find_h_ = 26.0F;
 	float padding_ = 6.0F;
 	float bar_h_ = 26.0F;
+	float ui_line_h_ = 16.0F;  // высота строки шрифта интерфейса
+	float ui_char_w_ = 6.0F;
 	UINT width_px_ = 0;
 	UINT height_px_ = 0;
 	float width_dip_ = 0.0F;  // клиентская область в DIP (см. dpi_scale)
