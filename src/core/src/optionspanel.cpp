@@ -32,7 +32,10 @@ std::string trim_size(float size)
 
 // Стандартные цвета (ColorDialog) и значения по умолчанию оригинала:
 // clMark = clBlue, clBackMark = clYellow.
-constexpr std::array<OptionsColor, 9> kColors = { {
+// Не constexpr: OptionsColor содержит std::string, и MSVC/clang 20 не считают
+// такую таблицу константным выражением (C2131 / «must be initialized by a
+// constant expression»).
+const std::array<OptionsColor, 9> kColors = { {
 	{ kColorBlue, "синий" },
 	{ kColorYellow, "жёлтый" },
 	{ kColorGreen, "зелёный" },
