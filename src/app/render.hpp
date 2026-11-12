@@ -97,6 +97,49 @@ struct OptionsView
 	int hot = -1;	 // кнопка под мышью
 };
 
+// Редактор словарей: таблица слов/правил, поля фильтра и правки, кнопки.
+// Геометрию считает App (ей же нужны прямоугольники для попадания мышью),
+// содержимое и проверки — ядро (yo::DictEditorState).
+struct DictRowView
+{
+	D2D1_RECT_F rect{};
+	std::wstring text;
+	bool current = false; // выбранная строка
+	bool error = false;	  // у правила ошибка компиляции
+};
+
+struct DictButtonView
+{
+	D2D1_RECT_F rect{};
+	std::wstring label;
+	int id = 0;
+	bool hot = false;
+	bool primary = false;	// «Сохранить»
+	bool checked = false;	// «?» включён
+	bool toggle = false;	// кнопка-переключатель
+};
+
+struct DictView
+{
+	D2D1_RECT_F rect{};
+	std::wstring title;
+	std::wstring subtitle; // «словарь: N слов» / «правила РВ: M правил»
+	D2D1_RECT_F filter_rect{};
+	std::wstring filter;
+	bool filter_focus = false;
+	D2D1_RECT_F edit_rect{};
+	std::wstring edit;
+	bool edit_focus = false;
+	std::wstring edit_label;
+	std::vector<D2D1_RECT_F> row_rects; // фон списка — по числу видимых строк
+	std::vector<DictRowView> rows;
+	std::vector<DictButtonView> buttons;
+	D2D1_RECT_F message_rect{};
+	std::wstring message;
+	bool message_error = false;
+	std::wstring hint;
+};
+
 // Тон кнопки панели: «Е» — синяя, «Ё» — зелёная, остальные — системные.
 enum class AskTone : std::uint8_t
 {
@@ -219,7 +262,7 @@ public:
 			   const AskView* ask = nullptr, const MenuBarView* bar = nullptr,
 			   const std::vector<std::pair<std::size_t, std::size_t>>& marks = {},
 			   const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks = {},
-			   const OptionsView* options = nullptr);
+			   const OptionsView* options = nullptr, const DictView* dict = nullptr);
 
 	[[nodiscard]] float text_area_width() const noexcept;
 	[[nodiscard]] float text_area_height() const noexcept;
@@ -237,6 +280,7 @@ private:
 	void draw_status(const std::wstring& status);
 	void draw_find_bar(const FindBarView& view);
 	void draw_options(const OptionsView& view);
+	void draw_dict_editor(const DictView& view);
 	void draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
 					const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color);
 	void draw_ask(const AskView& view);

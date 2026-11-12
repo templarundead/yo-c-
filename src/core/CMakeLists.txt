@@ -14,6 +14,7 @@ add_library(yo_core STATIC
 	src/mru.cpp
 	src/optionspanel.cpp
 	src/usersel.cpp
+	src/dictedit.cpp
 	src/ini.cpp
 )
 add_library(yo::core ALIAS yo_core)

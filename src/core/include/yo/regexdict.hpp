@@ -54,6 +54,10 @@ class RegexDictionary
 public:
 	static std::expected<RegexDictionary, std::string> load(const std::filesystem::path& path,
 															std::vector<LoadIssue>* issues = nullptr);
+	// То же по тексту словаря (CP1251) — для редактора словарей: он проверяет
+	// правленые правила без записи во временный файл.
+	static std::expected<RegexDictionary, std::string> parse(std::string_view cp1251_text,
+															 std::vector<LoadIssue>* issues = nullptr);
 
 	[[nodiscard]] bool empty() const noexcept { return rules_.empty(); }
 	[[nodiscard]] std::size_t size() const noexcept { return rules_.size(); }

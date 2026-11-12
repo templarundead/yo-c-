@@ -21,6 +21,7 @@
 
 #include "yo/find.hpp"
 #include "yo/mru.hpp"
+#include "yo/dictedit.hpp"
 #include "yo/optionspanel.hpp"
 #include "yo/usersel.hpp"
 
@@ -217,6 +218,29 @@ private:
 	[[nodiscard]] bool options_click(float x, float y);
 	[[nodiscard]] bool options_mouse_move(float x, float y);
 	[[nodiscard]] bool options_key(WPARAM vk, bool ctrl, bool shift);
+	// --- редактор словарей (этап 5) ---
+	void dict_editor_open();
+	void dict_editor_close();
+	void dict_sync_view();
+	void dict_set_mode(yo::DictMode mode);
+	void dict_move(long delta);
+	void dict_pick_selected();
+	void dict_apply();	// «Изменить»: заменить выбранную строку
+	void dict_add();	// «Добавить»: новое слово/правило
+	void dict_erase();	// «Удалить»
+	void dict_save();	// записать словари на диск
+	void dict_probe();	// тестовое поле словаря РВ
+	void dict_focus(yo::DictField field);
+	void dict_type(char32_t cp); // ввод символа в поле с фокусом
+	void dict_backspace();
+	void dict_activate(int id);	 // нажатие кнопки по id
+	[[nodiscard]] bool dict_key(WPARAM vk, bool ctrl, bool shift);
+	[[nodiscard]] bool dict_char(wchar_t ch);
+	[[nodiscard]] bool dict_click(float x, float y);
+	[[nodiscard]] bool dict_mouse_move(float x, float y);
+	// Полный путь словаря (из yo.ini или поиска рядом с exe).
+	[[nodiscard]] std::filesystem::path dictionary_path(bool regex_dict) const;
+
 	// Выбор файла словаря (меню «Файл» и строки окна настроек).
 	bool pick_dictionary(bool regex_dict);
 	// Перечитать словари с диска (OpenDic1 / OpenRegExprDic1 оригинала).
@@ -313,6 +337,13 @@ private:
 	OptionsView options_view_{};
 	int options_row_ = 0; // выбранная строка
 	int options_hot_ = -1; // кнопка под мышью
+
+	// Редактор словарей: состояние и проверки — в ядре, здесь только вид.
+	bool dict_open_ = false;
+	yo::DictEditorState dict_state_{};
+	DictView dict_view_{};
+	int dict_hot_ = -1;		// кнопка под мышью
+	std::size_t dict_rows_ = 10; // сколько строк списка влезает в панель
 	char32_t pending_high_ = 0;
 	int wheel_accum_ = 0; // остаток дельты колеса (тачпады шлют меньше 120)
 	// --- настройки (yo.ini рядом с exe, как у оригинала) ---

@@ -600,6 +600,117 @@ void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, f
 	}
 }
 
+// Редактор словарей: таблица, поля ввода, кнопки и строка сообщения.
+void Renderer::draw_dict_editor(const DictView& view)
+{
+	if (rt_ == nullptr || fmt_ui_ == nullptr || fmt_center_ == nullptr || brush_ == nullptr)
+		return;
+
+	if (dim_brush_ != nullptr)
+		rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, width_dip_, height_dip_), dim_brush_);
+
+	brush_->SetColor(theme_.gutter);
+	rt_->FillRectangle(view.rect, brush_);
+	brush_->SetColor(theme_.accent);
+	rt_->DrawRectangle(view.rect, brush_, 1.0F);
+
+	// Заголовок и подпись («словарь: N слов»).
+	brush_->SetColor(theme_.text);
+	rt_->DrawTextW(view.title.c_str(), static_cast<UINT32>(view.title.size()), fmt_ui_,
+				   D2D1::RectF(view.rect.left + 14.0F, view.rect.top + 6.0F, view.rect.right - 14.0F,
+							   view.rect.top + 28.0F),
+				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	brush_->SetColor(theme_.status_fg);
+	rt_->DrawTextW(view.subtitle.c_str(), static_cast<UINT32>(view.subtitle.size()), fmt_ui_,
+				   D2D1::RectF(view.rect.left + 14.0F, view.rect.top + 26.0F, view.rect.right - 14.0F,
+							   view.rect.top + 46.0F),
+				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+	// Поля ввода: фильтр и слово/правило. Рамка — акцентная у поля с фокусом.
+	const auto draw_field = [this](const D2D1_RECT_F& rect, const std::wstring& text, bool focus,
+								   const std::wstring& empty_hint)
+	{
+		brush_->SetColor(theme_.bg);
+		rt_->FillRectangle(rect, brush_);
+		brush_->SetColor(focus ? theme_.accent : theme_.status_fg);
+		rt_->DrawRectangle(rect, brush_, 1.0F);
+		const std::wstring& shown = text.empty() ? empty_hint : text;
+		brush_->SetColor(text.empty() ? theme_.status_fg : theme_.text);
+		rt_->DrawTextW(shown.c_str(), static_cast<UINT32>(shown.size()), fmt_ui_,
+					   D2D1::RectF(rect.left + 6.0F, rect.top, rect.right - 6.0F, rect.bottom), brush_,
+					   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		if (focus)
+		{
+			// Курсор поля — черта в конце текста (ввод всегда в конец).
+			const float w = text.empty() ? 0.0F : measure_ui(text);
+			const float x = std::min(rect.left + 6.0F + w, rect.right - 3.0F);
+			brush_->SetColor(theme_.caret);
+			rt_->FillRectangle(D2D1::RectF(x, rect.top + 3.0F, x + 1.0F, rect.bottom - 3.0F),
+							   brush_);
+		}
+	};
+
+	draw_field(view.filter_rect, view.filter, view.filter_focus, L"фильтр…");
+	if (!view.edit_label.empty())
+	{
+		brush_->SetColor(theme_.status_fg);
+		rt_->DrawTextW(view.edit_label.c_str(), static_cast<UINT32>(view.edit_label.size()), fmt_ui_,
+					   D2D1::RectF(view.edit_rect.left - 0.0F, view.edit_rect.top - 18.0F,
+								   view.edit_rect.right, view.edit_rect.top - 2.0F),
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+	draw_field(view.edit_rect, view.edit, view.edit_focus,
+			   view.edit_label.empty() ? L"правило…" : L"слово с «ё»…");
+
+	// Строки таблицы.
+	for (const DictRowView& row : view.rows)
+	{
+		if (row.current)
+		{
+			brush_->SetColor(theme_.selection);
+			rt_->FillRectangle(row.rect, brush_);
+		}
+		brush_->SetColor(row.error ? D2D1::ColorF(0.85F, 0.35F, 0.30F) : theme_.text);
+		rt_->DrawTextW(row.text.c_str(), static_cast<UINT32>(row.text.size()), fmt_ui_,
+					   D2D1::RectF(row.rect.left + 6.0F, row.rect.top, row.rect.right - 6.0F,
+								   row.rect.bottom),
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+
+	for (const DictButtonView& b : view.buttons)
+	{
+		D2D1_COLOR_F fill = theme_.status_bg;
+		D2D1_COLOR_F border = theme_.status_fg;
+		if (b.toggle && b.checked)
+		{
+			fill = theme_.selection;
+			border = theme_.accent;
+		}
+		if (b.hot || b.primary)
+		{
+			fill = theme_.selection;
+			border = theme_.accent;
+		}
+		brush_->SetColor(fill);
+		rt_->FillRectangle(b.rect, brush_);
+		brush_->SetColor(border);
+		rt_->DrawRectangle(b.rect, brush_, 1.0F);
+		brush_->SetColor(theme_.text);
+		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_, b.rect,
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+
+	// Сообщение (ошибки — красным) и подсказка по клавишам.
+	brush_->SetColor(view.message_error ? D2D1::ColorF(0.95F, 0.45F, 0.40F) : theme_.status_fg);
+	rt_->DrawTextW(view.message.c_str(), static_cast<UINT32>(view.message.size()), fmt_ui_,
+				   view.message_rect, brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	brush_->SetColor(theme_.status_fg);
+	rt_->DrawTextW(view.hint.c_str(), static_cast<UINT32>(view.hint.size()), fmt_ui_,
+				   D2D1::RectF(view.rect.left + 14.0F, view.rect.bottom - 22.0F,
+							   view.rect.right - 14.0F, view.rect.bottom - 4.0F),
+				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
 void Renderer::draw_menu_bar(const MenuBarView& bar)
 {
 	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
@@ -786,7 +897,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 					 const AskView* ask, const MenuBarView* bar,
 					 const std::vector<std::pair<std::size_t, std::size_t>>& marks,
 					 const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks,
-					 const OptionsView* options)
+					 const OptionsView* options, const DictView* dict)
 {
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
@@ -1027,6 +1138,8 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		draw_menu_bar(*bar);
 	if (options != nullptr)
 		draw_options(*options);
+	if (dict != nullptr)
+		draw_dict_editor(*dict);
 
 	const HRESULT hr = rt_->EndDraw();
 	if (hr == D2DERR_RECREATE_TARGET)

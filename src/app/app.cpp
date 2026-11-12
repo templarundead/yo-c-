@@ -79,6 +79,7 @@ constexpr int kCmdOpenDict = 1112;
 constexpr int kCmdOpenRegexDict = 1113;
 constexpr int kCmdClearUserSel = 1114;
 constexpr int kCmdWordWrap = 1115;
+constexpr int kCmdDictEditor = 1116;
 
 constexpr UINT_PTR kCaretTimer = 1;
 constexpr int kDefaultWidth = 1000;
@@ -86,6 +87,10 @@ constexpr int kDefaultHeight = 720;
 
 std::wstring widen(std::string_view utf8) { return utf8_to_wide(utf8); }
 std::string narrow(const std::wstring& wide) { return wide_to_utf8(wide); }
+
+// Поиск файла данных рядом с exe/data — определён ниже; объявление нужно,
+// чтобы App::dictionary_path() мог им пользоваться.
+std::filesystem::path find_data_file(const std::filesystem::path& name);
 
 // Каталог программы: рядом с ним лежат yo.ini и словари по умолчанию.
 std::filesystem::path program_dir()
@@ -623,6 +628,7 @@ void App::build_menus()
 		{ L"Сохранить\tCtrl+S", kCmdSave },
 		{ L"Сохранить как…\tCtrl+Shift+S", kCmdSaveAs },
 		{ L"", 0, true },
+		{ L"Редактор словаря…\tCtrl+Shift+D", kCmdDictEditor },
 		{ L"Загрузить основной словарь…", kCmdOpenDict },
 		{ L"Загрузить словарь РВ…", kCmdOpenRegexDict },
 		{ L"", 0, true },
@@ -994,6 +1000,7 @@ void App::setup_accels()
 		{ FCONTROL | FVIRTKEY, '0', kCmdFontReset },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'L', kCmdLineNumbers },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'W', kCmdWordWrap },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'D', kCmdDictEditor },
 		{ FCONTROL | FVIRTKEY, 'P', kCmdFileProp },
 		{ FCONTROL | FVIRTKEY, 'L', kCmdOpen },
 		{ FVIRTKEY, VK_F1, kCmdAbout },
@@ -1275,9 +1282,10 @@ void App::on_paint()
 	find_sync_view();
 	const auto paint_started = std::chrono::steady_clock::now();
 	options_sync_view();
+	dict_sync_view();
 	renderer_.paint(*ed_, status_text(), show_find_ ? &find_view_ : nullptr, caret_on_,
 					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view, find_marks_, yofy_marks_,
-					options_open_ ? &options_view_ : nullptr);
+					options_open_ ? &options_view_ : nullptr, dict_open_ ? &dict_view_ : nullptr);
 	const double paint_ms =
 		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paint_started).count();
 	if (paint_ms > 16.0)
@@ -1348,6 +1356,11 @@ void App::on_char(wchar_t ch)
 	}
 	pending_high_ = 0;
 
+	if (dict_open_)
+	{
+		(void)dict_char(ch); // редактор словаря: ввод в поле фильтра/слова
+		return;
+	}
 	if (options_open_)
 		return; // в окне настроек нет полей ввода
 	if (find_char(ch))
@@ -1378,6 +1391,8 @@ void App::on_char(wchar_t ch)
 
 void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 {
+	if (dict_key(vk, ctrl, shift))
+		return;
 	if (options_key(vk, ctrl, shift))
 		return;
 	if (find_key(vk, ctrl, shift))
@@ -1698,6 +1713,24 @@ void App::on_context_menu(int x, int y)
 
 void App::on_command(int id)
 {
+	// Редактор словаря — модальное наложение: пока он открыт, команды
+	// документа не выполняются (иначе Ctrl+S сохранил бы файл, а не словарь).
+	if (dict_open_)
+	{
+		switch (id)
+		{
+		case kCmdDictEditor:
+			dict_editor_close();
+			break;
+		case kCmdSave:
+			dict_save();
+			break;
+		default:
+			break;
+		}
+		return;
+	}
+
 	if (id >= kCmdMru1 && id < kCmdMru1 + static_cast<int>(kMruMax))
 	{
 		open_mru(static_cast<std::size_t>(id - kCmdMru1));
@@ -1771,6 +1804,9 @@ void App::on_command(int id)
 		break;
 	case kCmdWordWrap:
 		toggle_word_wrap();
+		break;
+	case kCmdDictEditor:
+		dict_editor_open();
 		break;
 	case kCmdFileProp:
 		show_file_props();
@@ -2659,6 +2695,17 @@ bool App::options_key(WPARAM vk, bool ctrl, bool shift)
 
 // ---------------------------------------------------------------- настройки
 
+std::filesystem::path App::dictionary_path(bool regex_dict) const
+{
+	const std::wstring& name = regex_dict ? regex_setting_ : dict_setting_;
+	if (name.empty())
+		return find_data_file(regex_dict ? L"yo_regexpr.dat" : L"yox.dat");
+	std::filesystem::path path(name);
+	if (path.is_relative())
+		path = program_dir() / path;
+	return path;
+}
+
 std::string App::dictionary_display(bool regex_dict) const
 {
 	const std::wstring& setting = regex_dict ? regex_setting_ : dict_setting_;
@@ -2967,6 +3014,546 @@ void App::clear_user_selection()
 	std::error_code ec;
 	std::filesystem::remove(usersel_path(), ec); // запомненное тоже забываем
 	invalidate();
+}
+
+
+// ---------------------------------------------------------------- редакторы словарей
+
+namespace {
+
+// Кнопки редактора словарей: id одинаковы для вида, кликов и клавиатуры.
+enum DictButtonId
+{
+	kDictModeWords = 1,
+	kDictModeRules,
+	kDictAsk,
+	kDictAdd,
+	kDictChange,
+	kDictErase,
+	kDictProbe,
+	kDictSave,
+	kDictClose,
+};
+
+[[nodiscard]] std::wstring dict_utf8_to_wide(const std::string& utf8) { return widen(utf8); }
+
+// UTF-32 (ядро) -> UTF-16 (Win32), с суррогатными парами.
+[[nodiscard]] std::wstring dict_u32_to_wide(const yo::UString& text)
+{
+	std::wstring out;
+	out.reserve(text.size());
+	for (char32_t c : text)
+	{
+		if (c >= 0x10000)
+		{
+			const char32_t v = c - 0x10000;
+			out.push_back(static_cast<wchar_t>(0xD800 + (v >> 10)));
+			out.push_back(static_cast<wchar_t>(0xDC00 + (v & 0x3FF)));
+		}
+		else
+		{
+			out.push_back(static_cast<wchar_t>(c));
+		}
+	}
+	return out;
+}
+
+} // namespace
+
+void App::dict_editor_open()
+{
+	if (dict_open_)
+	{
+		dict_editor_close();
+		return;
+	}
+	const std::filesystem::path words = dictionary_path(false);
+	const std::filesystem::path rules = dictionary_path(true);
+	yo::dict_editor_load(dict_state_, narrow(words.wstring()), narrow(rules.wstring()));
+	dict_state_.mode = yo::DictMode::words;
+	yo::dict_editor_refilter(dict_state_);
+	dict_open_ = true;
+	dict_hot_ = -1;
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_editor_close()
+{
+	if (!dict_open_)
+		return;
+	dict_open_ = false;
+	dict_view_ = {};
+	dict_hot_ = -1;
+	invalidate();
+}
+
+void App::dict_sync_view()
+{
+	dict_view_ = DictView{};
+	if (!dict_open_)
+		return;
+
+	const float w = std::min(std::max(560.0F, renderer_.width_dip() - 80.0F), 1000.0F);
+	const float h = std::min(std::max(380.0F, renderer_.height_dip() - 120.0F), 760.0F);
+	const float x = std::max(0.0F, (renderer_.width_dip() - w) * 0.5F);
+	const float y = renderer_.bar_height() + 20.0F;
+	dict_view_.rect = D2D1::RectF(x, y, x + w, y + h);
+
+	const float pad = 14.0F;
+	const float field_h = std::max(22.0F, renderer_.ui_line_height() + 8.0F);
+	const float row_h = std::max(16.0F, renderer_.ui_line_height() + 2.0F);
+
+	dict_view_.title = L"Редактор словаря";
+	dict_view_.subtitle =
+		dict_state_.mode == yo::DictMode::words
+			? L"yox.dat: " + std::to_wstring(dict_state_.words.size()) + L" слов"
+			: L"yo_regexpr.dat: " + std::to_wstring(dict_state_.rules.rule_count()) + L" правил";
+
+	// Поле фильтра — вся ширина панели.
+	const float top = y + 50.0F;
+	dict_view_.filter_rect = D2D1::RectF(x + pad, top, x + w - pad, top + field_h);
+	dict_view_.filter = dict_u32_to_wide(dict_state_.filter.query);
+	dict_view_.filter_focus = dict_state_.field == yo::DictField::filter;
+
+	// Список: сколько строк влезает между полем фильтра и полем правки.
+	const float list_top = top + field_h + 8.0F;
+	const float edit_h = field_h + 22.0F; // подпись + поле
+	const float buttons_h = 30.0F;
+	const float message_h = 20.0F;
+	const float hint_h = 22.0F;
+	const float list_bottom = y + h - (edit_h + buttons_h + message_h + hint_h + pad);
+	const auto rows_fit = static_cast<std::size_t>(
+		std::max(3.0F, std::floor((list_bottom - list_top) / row_h)));
+	dict_rows_ = rows_fit;
+
+	// Прокрутка списка под курсор (top живёт в ядре).
+	if (dict_state_.cursor < dict_state_.top)
+		dict_state_.top = dict_state_.cursor;
+	if (dict_state_.cursor >= dict_state_.top + dict_rows_)
+		dict_state_.top = dict_state_.cursor - dict_rows_ + 1;
+
+	for (std::size_t i = 0; i < dict_rows_; ++i)
+	{
+		const std::size_t list_row = dict_state_.top + i;
+		D2D1_RECT_F rect = D2D1::RectF(x + pad, list_top + static_cast<float>(i) * row_h,
+									   x + w - pad, list_top + static_cast<float>(i + 1) * row_h);
+		dict_view_.row_rects.push_back(rect);
+		if (list_row >= dict_state_.visible.size())
+			continue;
+		DictRowView view;
+		view.rect = rect;
+		view.text = dict_utf8_to_wide(yo::dict_row_text(dict_state_, list_row));
+		view.current = list_row == dict_state_.cursor;
+		view.error = yo::dict_row_error(dict_state_, list_row);
+		dict_view_.rows.push_back(std::move(view));
+	}
+
+	// Поле правки: словоформа (слова) или шаблон (правила РВ).
+	const float edit_label_y = list_bottom + 2.0F;
+	dict_view_.edit_label = dict_state_.mode == yo::DictMode::words ? L"Словоформа" : L"Правило";
+	const float ask_w = dict_state_.mode == yo::DictMode::words ? 40.0F : 0.0F;
+	dict_view_.edit_rect = D2D1::RectF(x + pad, edit_label_y + 16.0F,
+									   x + w - pad - ask_w, edit_label_y + 16.0F + field_h);
+	dict_view_.edit = dict_u32_to_wide(dict_state_.edit);
+	dict_view_.edit_focus = dict_state_.field == yo::DictField::text;
+
+	// Кнопки: режим, «?», действия, проверка, сохранение и закрытие.
+	const float buttons_y = y + h - (buttons_h + message_h + hint_h + pad) + 4.0F;
+	float bx = x + pad;
+	const auto add_button = [&](std::wstring label, int id, bool primary, bool toggle, bool checked)
+	{
+		const float bw = std::max(34.0F, renderer_.measure_ui(label) + 18.0F);
+		DictButtonView b;
+		b.rect = D2D1::RectF(bx, buttons_y, bx + bw, buttons_y + buttons_h - 6.0F);
+		b.label = std::move(label);
+		b.id = id;
+		b.primary = primary;
+		b.toggle = toggle;
+		b.checked = checked;
+		b.hot = dict_hot_ == id;
+		bx += bw + 6.0F;
+		dict_view_.buttons.push_back(std::move(b));
+	};
+
+	add_button(L"Слова", kDictModeWords, false, true, dict_state_.mode == yo::DictMode::words);
+	add_button(L"Правила РВ", kDictModeRules, false, true, dict_state_.mode == yo::DictMode::rules);
+	bx += 10.0F;
+	add_button(L"Добавить", kDictAdd, false, false, false);
+	add_button(L"Изменить", kDictChange, false, false, false);
+	add_button(L"Удалить", kDictErase, false, false, false);
+	if (dict_state_.mode == yo::DictMode::rules)
+	{
+		bx += 10.0F;
+		add_button(L"Проверить", kDictProbe, false, false, false);
+	}
+	add_button(L"Сохранить", kDictSave, true, false, false);
+	add_button(L"Закрыть", kDictClose, false, false, false);
+
+	// «?» — переключатель у поля правки (только словарь).
+	if (dict_state_.mode == yo::DictMode::words)
+	{
+		DictButtonView ask;
+		ask.rect = D2D1::RectF(x + w - pad - ask_w + 4.0F, dict_view_.edit_rect.top,
+							   x + w - pad, dict_view_.edit_rect.bottom);
+		ask.label = L"?";
+		ask.id = kDictAsk;
+		ask.toggle = true;
+		ask.checked = dict_state_.edit_ask;
+		ask.hot = dict_hot_ == kDictAsk;
+		dict_view_.buttons.push_back(std::move(ask));
+	}
+
+	dict_view_.message_rect = D2D1::RectF(x + pad, y + h - (message_h + hint_h + pad) + 2.0F,
+										  x + w - pad, y + h - (hint_h + pad) + 2.0F);
+	dict_view_.message = dict_utf8_to_wide(dict_state_.message);
+	dict_view_.message_error = dict_state_.message_error;
+	dict_view_.hint = dict_state_.mode == yo::DictMode::words
+						  ? L"Tab — поле, ↑↓/PgUp/PgDn — выбор, Enter — изменить, Ctrl+Enter — "
+							L"добавить, Del — удалить, Ctrl+S — сохранить, Esc — закрыть"
+						  : L"Tab — поле, ↑↓/PgUp/PgDn — выбор, Enter — изменить, Ctrl+Enter — "
+							L"добавить, Del — удалить, F5 — проверить контекст, Ctrl+S — сохранить";
+}
+
+void App::dict_set_mode(yo::DictMode mode)
+{
+	if (dict_state_.mode == mode)
+		return;
+	dict_state_.mode = mode;
+	dict_state_.cursor = 0;
+	dict_state_.top = 0;
+	dict_state_.edit.clear();
+	dict_state_.edit_ask = false;
+	dict_state_.field = yo::DictField::filter;
+	yo::dict_editor_refilter(dict_state_);
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_move(long delta)
+{
+	yo::dict_editor_move(dict_state_, delta);
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_pick_selected()
+{
+	yo::dict_editor_pick(dict_state_);
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_apply()
+{
+	(void)yo::dict_editor_apply(dict_state_);
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_add()
+{
+	(void)yo::dict_editor_add(dict_state_);
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_erase()
+{
+	if (dict_state_.visible.empty())
+		return;
+	// Перед удалением спрашиваем: словарь — не документ, undo здесь нет.
+	const std::wstring question =
+		L"Удалить выбранную строку из словаря?\nИзменения попадут в файл только по «Сохранить».";
+	if (MessageBoxW(hwnd_, question.c_str(), L"Редактор словаря",
+					MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+		return;
+	(void)yo::dict_editor_erase(dict_state_);
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_save()
+{
+	if (!yo::dict_editor_save(dict_state_))
+	{
+		dict_sync_view();
+		invalidate();
+		return;
+	}
+	// Словари перечитываются, чтобы ёфикация сразу работала по новым данным.
+	// Ответы «Всегда Е/Ё» (yo_user.dat) при этом не сбрасываются.
+	yofy_.reset();
+	(void)ensure_yoficator();
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_probe()
+{
+	if (dict_state_.mode != yo::DictMode::rules)
+		return;
+	// Контекст для проверки — текст фильтра; слово — первое слово контекста.
+	const yo::UString& context = dict_state_.filter.query;
+	if (context.empty())
+	{
+		dict_state_.message = "введите контекст в поле фильтра";
+		dict_state_.message_error = true;
+		dict_sync_view();
+		invalidate();
+		return;
+	}
+	std::size_t b = 0;
+	while (b < context.size() && yo::cyr::is_blank(context[b]))
+		++b;
+	std::size_t e = b;
+	while (e < context.size() && yo::cyr::is_alpha(context[e]))
+		++e;
+	if (e == b)
+	{
+		dict_state_.message = "в контексте нет слова из русских букв";
+		dict_state_.message_error = true;
+		dict_sync_view();
+		invalidate();
+		return;
+	}
+	const yo::UString word = context.substr(b, e - b);
+	const yo::RegexProbe probe = yo::probe_regex(dict_state_.rules, context, b, word);
+	if (!probe.ok)
+	{
+		dict_state_.message = probe.error;
+		dict_state_.message_error = true;
+	}
+	else if (probe.matched)
+	{
+		std::string answer = std::string("правило №") + std::to_string(probe.rule_no + 1) + " (строка " +
+							 std::to_string(probe.line + 1) + "): советует форму «" +
+							 (probe.word_n == 2 ? probe.word_yo : probe.word_ye) + "»";
+		dict_state_.message = answer;
+		dict_state_.message_error = false;
+	}
+	else
+	{
+		dict_state_.message = "ни одно правило не сработало (словарь РВ не решил)";
+		dict_state_.message_error = false;
+	}
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_focus(yo::DictField field)
+{
+	dict_state_.field = field;
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_type(char32_t cp)
+{
+	if (!dict_open_)
+		return;
+	if (dict_state_.field == yo::DictField::filter)
+	{
+		dict_state_.filter.query.push_back(cp);
+		yo::dict_editor_refilter(dict_state_);
+		dict_state_.cursor = 0;
+		dict_state_.top = 0;
+	}
+	else
+	{
+		dict_state_.edit.push_back(cp);
+	}
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_backspace()
+{
+	if (!dict_open_)
+		return;
+	if (dict_state_.field == yo::DictField::filter)
+	{
+		if (dict_state_.filter.query.empty())
+			return;
+		dict_state_.filter.query.pop_back();
+		yo::dict_editor_refilter(dict_state_);
+		dict_state_.cursor = 0;
+		dict_state_.top = 0;
+	}
+	else
+	{
+		if (dict_state_.edit.empty())
+			return;
+		dict_state_.edit.pop_back();
+	}
+	dict_sync_view();
+	invalidate();
+}
+
+void App::dict_activate(int id)
+{
+	switch (id)
+	{
+	case kDictModeWords:
+		dict_set_mode(yo::DictMode::words);
+		break;
+	case kDictModeRules:
+		dict_set_mode(yo::DictMode::rules);
+		break;
+	case kDictAsk:
+		dict_state_.edit_ask = !dict_state_.edit_ask;
+		dict_sync_view();
+		invalidate();
+		break;
+	case kDictAdd:
+		dict_add();
+		break;
+	case kDictChange:
+		dict_apply();
+		break;
+	case kDictErase:
+		dict_erase();
+		break;
+	case kDictProbe:
+		dict_probe();
+		break;
+	case kDictSave:
+		dict_save();
+		break;
+	case kDictClose:
+		dict_editor_close();
+		break;
+	default:
+		break;
+	}
+}
+
+bool App::dict_key(WPARAM vk, bool ctrl, bool shift)
+{
+	if (!dict_open_)
+		return false;
+	switch (vk)
+	{
+	case VK_ESCAPE:
+		dict_editor_close();
+		return true;
+	case VK_UP:
+		dict_move(-1);
+		return true;
+	case VK_DOWN:
+		dict_move(1);
+		return true;
+	case VK_PRIOR:
+		dict_move(-static_cast<long>(std::max<std::size_t>(1, dict_rows_)));
+		return true;
+	case VK_NEXT:
+		dict_move(static_cast<long>(std::max<std::size_t>(1, dict_rows_)));
+		return true;
+	case VK_HOME:
+		dict_state_.cursor = 0;
+		dict_state_.top = 0;
+		dict_sync_view();
+		invalidate();
+		return true;
+	case VK_END:
+		if (!dict_state_.visible.empty())
+			dict_state_.cursor = dict_state_.visible.size() - 1;
+		dict_sync_view();
+		invalidate();
+		return true;
+	case VK_TAB:
+		dict_focus(shift ? yo::DictField::filter : yo::DictField::text);
+		return true;
+	case VK_RETURN:
+		if (ctrl)
+			dict_add();
+		else
+			dict_apply();
+		return true;
+	case VK_DELETE:
+		dict_erase();
+		return true;
+	case VK_F5:
+		dict_probe();
+		return true;
+	case VK_BACK:
+		dict_backspace();
+		return true;
+	default:
+		break;
+	}
+	if (ctrl && vk == 'S')
+	{
+		dict_save();
+		return true;
+	}
+	return true; // остальные клавиши документу не отдаём
+}
+
+bool App::dict_char(wchar_t ch)
+{
+	if (!dict_open_)
+		return false;
+	if (ch >= 0x20 && ch != 0x7F)
+		dict_type(static_cast<char32_t>(ch));
+	return true;
+}
+
+bool App::dict_click(float x, float y)
+{
+	if (!dict_open_)
+		return false;
+	const auto inside = [](const D2D1_RECT_F& r, float px, float py)
+	{ return px >= r.left && px <= r.right && py >= r.top && py <= r.bottom; };
+
+	for (const DictButtonView& b : dict_view_.buttons)
+	{
+		if (inside(b.rect, x, y))
+		{
+			dict_activate(b.id);
+			return true;
+		}
+	}
+	for (std::size_t i = 0; i < dict_view_.rows.size(); ++i)
+	{
+		if (!inside(dict_view_.rows[i].rect, x, y))
+			continue;
+		dict_state_.cursor = dict_state_.top + i;
+		dict_pick_selected();
+		return true;
+	}
+	if (inside(dict_view_.filter_rect, x, y))
+	{
+		dict_focus(yo::DictField::filter);
+		return true;
+	}
+	if (inside(dict_view_.edit_rect, x, y))
+	{
+		dict_focus(yo::DictField::text);
+		return true;
+	}
+	return inside(dict_view_.rect, x, y); // клик по панели — документу не отдаём
+}
+
+bool App::dict_mouse_move(float x, float y)
+{
+	if (!dict_open_)
+		return false;
+	int hot = -1;
+	for (const DictButtonView& b : dict_view_.buttons)
+	{
+		if (x >= b.rect.left && x <= b.rect.right && y >= b.rect.top && y <= b.rect.bottom)
+		{
+			hot = b.id;
+			break;
+		}
+	}
+	if (hot != dict_hot_)
+	{
+		dict_hot_ = hot;
+		invalidate();
+	}
+	return hot >= 0;
 }
 
 // ---------------------------------------------------------------- последние файлы
@@ -3341,17 +3928,8 @@ bool App::ensure_yoficator()
 
 	// Пути из yo.ini (как в оригинале) важнее поиска рядом с exe; короткие
 	// имена разрешаются от каталога программы.
-	const auto resolve = [](const std::wstring& name, const wchar_t* fallback)
-	{
-		if (name.empty())
-			return find_data_file(fallback);
-		std::filesystem::path path(name);
-		if (path.is_relative())
-			path = program_dir() / path;
-		return path;
-	};
-	const std::filesystem::path dict_path = resolve(dict_setting_, L"yox.dat");
-	const std::filesystem::path regex_path = resolve(regex_setting_, L"yo_regexpr.dat");
+	const std::filesystem::path dict_path = dictionary_path(false);
+	const std::filesystem::path regex_path = dictionary_path(true);
 	if (dict_path.empty())
 	{
 		MessageBoxW(hwnd_,
@@ -4346,6 +4924,8 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		SetFocus(hwnd_);
 		if (menu_click(x, y))
 			return 0;
+		if (dict_click(x, y))
+			return 0;
 		if (options_click(x, y))
 			return 0;
 		if (find_click(x, y))
@@ -4384,6 +4964,8 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
 		SetCursor(LoadCursorW(nullptr, y < renderer_.bar_height() ? IDC_ARROW : IDC_IBEAM));
 		if (menu_mouse_move(x, y))
+			return 0;
+		if (dict_mouse_move(x, y))
 			return 0;
 		if (options_mouse_move(x, y))
 			return 0;

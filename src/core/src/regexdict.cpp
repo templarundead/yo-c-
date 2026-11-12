@@ -6,6 +6,8 @@
 #include <array>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -186,7 +188,13 @@ std::expected<RegexDictionary, std::string> RegexDictionary::load(const std::fil
 	std::ifstream in(path, std::ios::binary);
 	if (!in)
 		return std::unexpected("не удалось открыть словарь РВ: " + path.string());
+	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	return parse(text, issues);
+}
 
+std::expected<RegexDictionary, std::string> RegexDictionary::parse(std::string_view text,
+																   std::vector<LoadIssue>* issues)
+{
 	RegexDictionary dict;
 	std::string line;
 	auto add_issue = [&](std::string kind, std::string detail)
@@ -195,6 +203,7 @@ std::expected<RegexDictionary, std::string> RegexDictionary::load(const std::fil
 			issues->push_back({ std::move(kind), std::move(detail) });
 	};
 
+	std::istringstream in{ std::string(text) };
 	while (std::getline(in, line))
 	{
 		if (!line.empty() && line.back() == '\r')
