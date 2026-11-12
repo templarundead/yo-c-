@@ -22,6 +22,7 @@
 #include "yo/find.hpp"
 #include "yo/mru.hpp"
 #include "yo/optionspanel.hpp"
+#include "yo/usersel.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -222,6 +223,10 @@ private:
 	void reload_dictionaries();
 	// Сброс пользовательских «Всегда Е/Ё» (ClearUserSel оригинала).
 	void clear_user_selection();
+	// Запомненные ответы «Всегда Е/Ё»: файл yo_user.dat рядом с yo.ini.
+	[[nodiscard]] std::filesystem::path usersel_path() const;
+	void load_user_selections();
+	void save_user_selections();
 	[[nodiscard]] std::string dictionary_display(bool regex_dict) const;
 
 	// --- прочее из меню оригинала ---

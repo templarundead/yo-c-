@@ -283,3 +283,69 @@ TEST_CASE("ёфикация: без отмены проход идёт до ко
 	CHECK(r.lines == 50);
 	CHECK(seen == 50);
 }
+
+TEST_CASE("ёфикация документа кусками: одна отмена на весь проход", "[yofytext]")
+{
+	Engine e;
+	// Много строк с заменами: куски по две строки — проверяем склейку.
+	std::string text;
+	for (int i = 0; i < 12; ++i)
+		text += "все еще не пришел\n";
+	auto buf = tb(text);
+	const std::string before = buf->text();
+
+	std::vector<std::size_t> seen;
+	const YofyResult r = yofify_document(
+		*buf, 0, buf->size(), e.yofy, 2, [&](std::size_t line) { seen.push_back(line); },
+		{});
+
+	CHECK(r.changed);
+	CHECK_FALSE(r.cancelled);
+	CHECK(r.lines == 12);
+	CHECK(r.replaced > 0);
+	// Прогресс сообщается по строкам документа, по порядку и без пропусков.
+	REQUIRE(seen.size() == 12);
+	for (std::size_t i = 0; i < seen.size(); ++i)
+		CHECK(seen[i] == i);
+
+	CHECK(buf->text().find("всё ещё не пришёл") != std::string::npos);
+	CHECK(buf->line_count() == 13);
+
+	// Один шаг отмены возвращает весь документ.
+	REQUIRE(buf->undo());
+	CHECK(buf->text() == before);
+	CHECK_FALSE(buf->undo()); // и больше ничего не осталось
+}
+
+TEST_CASE("ёфикация документа кусками: отмена посреди прохода", "[yofytext]")
+{
+	Engine e;
+	std::string text;
+	for (int i = 0; i < 8; ++i)
+		text += "все еще\n";
+	auto buf = tb(text);
+
+	std::size_t calls = 0;
+	const YofyResult r = yofify_document(
+		*buf, 0, buf->size(), e.yofy, 2, [](std::size_t) {},
+		[&] { return ++calls > 3; }); // отмена после третьей проверки
+
+	CHECK(r.cancelled);
+	CHECK(r.lines < 8); // проход не дошёл до конца
+	CHECK(buf->text().find("всё ещё") != std::string::npos); // сделанное осталось
+	REQUIRE(buf->undo());
+	CHECK(buf->text().find("все еще") != std::string::npos);
+}
+
+TEST_CASE("ёфикация документа кусками: диапазон и пустой документ", "[yofytext]")
+{
+	Engine e;
+	auto empty = tb("");
+	CHECK_FALSE(yofify_document(*empty, 0, 0, e.yofy).changed);
+
+	auto buf = tb("все еще\nвсе еще\n");
+	const std::size_t second = buf->line_start(1);
+	CHECK(yofify_document(*buf, second, buf->size(), e.yofy, 1).changed);
+	CHECK(buf->text().rfind("все еще\n", 0) == 0);
+	CHECK(buf->text().find("всё ещё\n", 8) != std::string::npos);
+}

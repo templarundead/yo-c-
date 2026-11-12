@@ -158,4 +158,43 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 	return result;
 }
 
+YofyResult yofify_document(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
+						   std::size_t chunk_lines, const YofyLineFn& on_line,
+						   const YofyCancelFn& cancel)
+{
+	YofyResult total;
+	if (buf.size() == 0 || from >= to || chunk_lines == 0)
+		return total;
+
+	const std::size_t first = buf.line_of(from);
+	to = std::min(to, buf.size());
+	const std::size_t last = buf.line_of(to > 0 ? to - 1 : 0);
+
+	// Одна группа на весь проход: вложенные группы кусков её не разрывают.
+	buf.begin_group("Ёфикация");
+	for (std::size_t line = first; line <= last;)
+	{
+		const std::size_t next = line + chunk_lines;
+		const std::size_t chunk_from = buf.line_start(line);
+		const std::size_t chunk_to = next <= last ? buf.line_start(next) : to;
+		const YofyResult part = yofify_range(buf, chunk_from, chunk_to, yofy, on_line, cancel);
+		total.replaced += part.replaced;
+		total.lines += part.lines;
+		total.asked += part.asked;
+		total.reverted += part.reverted;
+		total.changed = total.changed || part.changed;
+		total.rolled_back = total.rolled_back || part.rolled_back;
+		if (part.cancelled)
+		{
+			total.cancelled = true;
+			break;
+		}
+		if (part.lines == 0)
+			break; // защита от зацикливания: кусок ничего не обработал
+		line = next;
+	}
+	buf.end_group();
+	return total;
+}
+
 } // namespace yo

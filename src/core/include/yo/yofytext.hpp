@@ -56,4 +56,16 @@ using YofyCancelFn = std::function<bool()>;
 YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
 						const YofyLineFn& on_line = {}, const YofyCancelFn& cancel = {});
 
+// Ёфицировать диапазон кусками по chunk_lines строк. Память ограничена
+// куском (а не размером файла), прогресс и отмена — по строкам документа,
+// а все правки попадают в одну группу undo: пользователю всё равно нужен
+// один «Отменить» на весь проход. Возвращает суммарный результат.
+//
+// Ограничение: «Откат» в панели вопросов помнит замены только текущего
+// куска (в оригинале — всего прохода); кусок в 2048 строк на практике
+// покрывает все вопросы, которые успевают задать.
+YofyResult yofify_document(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
+						   std::size_t chunk_lines = 2048, const YofyLineFn& on_line = {},
+						   const YofyCancelFn& cancel = {});
+
 } // namespace yo

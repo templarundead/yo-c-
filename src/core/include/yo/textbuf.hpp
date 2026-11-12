@@ -139,6 +139,7 @@ private:
 	std::vector<Group> redo_;
 	Group pending_;
 	bool in_group_ = false;
+	int group_depth_ = 0; // вложенные begin_group: правки всё равно в одну группу
 	bool modified_ = false;
 };
 

@@ -13,6 +13,7 @@ add_library(yo_core STATIC
 	src/find.cpp
 	src/mru.cpp
 	src/optionspanel.cpp
+	src/usersel.cpp
 	src/ini.cpp
 )
 add_library(yo::core ALIAS yo_core)

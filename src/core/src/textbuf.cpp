@@ -431,9 +431,16 @@ void TextBuffer::record(std::size_t offset, std::string erased, std::string inse
 
 void TextBuffer::begin_group(std::string_view name)
 {
+	// Вложенные группы (например, ёфикация документа кусками, где каждый
+	// кусок открывает свою) — одна группа undo: пользователю нужен один
+	// «Отменить» на весь проход.
 	if (in_group_)
+	{
+		++group_depth_;
 		return;
+	}
 	in_group_ = true;
+	group_depth_ = 0;
 	pending_ = Group{};
 	pending_.name = std::string(name);
 }
@@ -442,6 +449,11 @@ void TextBuffer::end_group()
 {
 	if (!in_group_)
 		return;
+	if (group_depth_ > 0)
+	{
+		--group_depth_;
+		return;
+	}
 	in_group_ = false;
 	if (!pending_.ops.empty())
 	{

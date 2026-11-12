@@ -1168,6 +1168,9 @@ std::wstring App::status_text() const
 		{
 			text += L" из ";
 			text += std::to_wstring(yofy_lines_);
+			text += L" (";
+			text += std::to_wstring(std::min<std::size_t>(100, (yofy_line_ + 1) * 100 / yofy_lines_));
+			text += L"%)";
 		}
 		if (ask_count_ > 0)
 		{
@@ -2858,6 +2861,79 @@ void App::reload_dictionaries()
 	refresh_view();
 }
 
+std::filesystem::path App::usersel_path() const
+{
+	const std::filesystem::path dir = ini_path_.empty() ? program_dir() : ini_path_.parent_path();
+	return dir / L"yo_user.dat";
+}
+
+void App::load_user_selections()
+{
+	if (!dict_)
+		return;
+	std::ifstream in(usersel_path(), std::ios::binary);
+	if (!in)
+		return;
+	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	const std::vector<UserSelEntry> entries = parse_user_selections(text);
+	std::size_t applied = 0;
+	for (const UserSelEntry& e : entries)
+	{
+		const UString word = decode_line({ reinterpret_cast<const std::uint8_t*>(e.word.data()),
+										   e.word.size() },
+										 Encoding::utf8);
+		const int index = dict_->find(word);
+		if (index < 0)
+			continue; // слова нет в этом словаре — строка не наша
+		dict_->set_user_sel(static_cast<std::size_t>(index), e.value);
+		++applied;
+	}
+	trace("настройки: загружены запомненные ответы «Всегда Е/Ё»");
+	if (applied != entries.size())
+		trace("настройки: часть запомненных слов не найдена в словаре");
+}
+
+void App::save_user_selections()
+{
+	if (!dict_)
+		return;
+	std::vector<UserSelEntry> entries;
+	for (std::size_t i = 0; i < dict_->size(); ++i)
+	{
+		const int value = dict_->user_sel(i);
+		if (value != 1 && value != 2)
+			continue;
+		entries.push_back(UserSelEntry{ encode_line(dict_->ye_unicode(i), Encoding::utf8), value });
+	}
+
+	const std::filesystem::path path = usersel_path();
+	std::error_code ec;
+	if (entries.empty())
+	{
+		// Нечего запоминать — файла быть не должно (иначе он «воскрешает»
+		// старые ответы после сброса).
+		std::filesystem::remove(path, ec);
+		return;
+	}
+
+	const std::string text = "; Ё (yo-c-) — запомненные ответы «Всегда Е/Ё» (1 — Е, 2 — Ё).\n" +
+		format_user_selections(entries);
+	const std::filesystem::path tmp = path.wstring() + L".yo-tmp";
+	{
+		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+		if (!out)
+			return;
+		out.write(text.data(), static_cast<std::streamsize>(text.size()));
+	}
+	ec.clear();
+	std::filesystem::rename(tmp, path, ec);
+	if (ec)
+	{
+		std::filesystem::remove(path, ec);
+		std::filesystem::rename(tmp, path, ec);
+	}
+}
+
 void App::clear_user_selection()
 {
 	if (!dict_)
@@ -2869,6 +2945,8 @@ void App::clear_user_selection()
 	dict_->reset_user_sel();
 	if (yofy_)
 		yofy_.reset(); // сбросить кешированный разбор
+	std::error_code ec;
+	std::filesystem::remove(usersel_path(), ec); // запомненное тоже забываем
 	invalidate();
 }
 
@@ -3255,6 +3333,7 @@ bool App::ensure_yoficator()
 		return false;
 	}
 	dict_ = std::make_unique<Dictionary>(std::move(*dict));
+	load_user_selections(); // ответы «Всегда Е/Ё» из прошлых запусков
 
 	if (!regex_path.empty())
 	{
@@ -3306,19 +3385,30 @@ void App::run_yofification()
 	yofy_busy_ = true;
 	ask_.line = yofy_line_;
 
+	// Проход идёт кусками по 2048 строк: память ограничена куском (а не
+	// размером файла), прогресс и Esc работают на всём диапазоне, а все
+	// правки по-прежнему попадают в одну группу undo.
+	std::size_t cancel_tick = 0;
 	const auto started = std::chrono::steady_clock::now();
-	last_yofy_ = yofify_range(
-		*buf_, from, to, *yofy_,
+	last_yofy_ = yofify_document(
+		*buf_, from, to, *yofy_, 2048,
 		[this](std::size_t line)
 		{
 			ask_.line = line;
 			yofy_line_ = line;
 			// Прогресс в статусе и живой интерфейс: без периодической
-			// перерисовки и обработки сообщений окно выглядит зависшим.
-			if (line % 32 == 0)
+			// перерисовки окно выглядит зависшим.
+			if (line % 64 == 0)
 				invalidate();
 		},
-		[this] { return pump_cancel(); });
+		[this, &cancel_tick]
+		{
+			// Обработка сообщений — не на каждой строке: PeekMessage
+			// дороже разбора строки на коротких строках.
+			if (++cancel_tick % 32 != 0)
+				return false;
+			return pump_cancel();
+		});
 	yofy_busy_ = false;
 	last_stats_ = yofy_->stats();
 	last_yofy_ms_ = std::chrono::duration<double, std::milli>(
@@ -3332,6 +3422,9 @@ void App::run_yofification()
 		PostMessageW(hwnd_, WM_CLOSE, 0, 0);
 		return;
 	}
+
+	if (ask_count_ > 0)
+		save_user_selections(); // ответы «Всегда Е/Ё» переживут перезапуск
 
 	if (last_yofy_.changed)
 	{
