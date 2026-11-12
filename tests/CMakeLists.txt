@@ -28,13 +28,4 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 include(Catch)
-if(MSVC)
-	# catch_discover_tests запускает каждый кейс отдельным процессом, передавая
-	# имя теста аргументом. На Windows кириллические имена доходят искажёнными,
-	# Catch2 отвечает «No test cases matched» и все 67 кейсов «падают» за 0.01 с.
-	# Поэтому на MSVC-ABI (MSVC и clang-cl) регистрируем весь бинарник одним
-	# тестом — ctest всё равно покажет вывод при --output-on-failure.
-	add_test(NAME yo_tests COMMAND yo_tests)
-else()
-	catch_discover_tests(yo_tests)
-endif()
+catch_discover_tests(yo_tests)
