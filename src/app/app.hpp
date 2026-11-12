@@ -312,6 +312,10 @@ private:
 	int hot_item_ = -1;	  // подсвеченный пункт выпадающего списка
 	int hot_title_ = -1;  // подсвеченный заголовок
 	bool mouse_tracking_ = false; // TrackMouseEvent уже вызван
+	// Полосы прокрутки видны только при необходимости (иначе в пустом окне
+	// торчал горизонтальный скроллбар без текста).
+	bool hscroll_shown_ = true;
+	bool vscroll_shown_ = true;
 	std::vector<D2D1_RECT_F> menu_item_rects_;
 	D2D1_RECT_F menu_panel_{};
 	std::shared_ptr<TextBuffer> buf_;

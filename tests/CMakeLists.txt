@@ -14,6 +14,7 @@ add_executable(yo_tests
 	test_optionspanel.cpp
 	test_usersel.cpp
 	test_dictedit.cpp
+	test_ranges.cpp
 )
 
 target_link_libraries(yo_tests PRIVATE yo::core Catch2::Catch2WithMain)

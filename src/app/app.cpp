@@ -1270,6 +1270,27 @@ void App::update_scrollbars(bool redraw)
 {
 	if (hwnd_ == nullptr || !ed_)
 		return;
+
+	// Полосы прокрутки показываем только когда содержимое не помещается:
+	// в пустом (или коротком) окне горизонтальная полоса не нужна, а окно
+	// создаётся со стилями WS_HSCROLL|WS_VSCROLL, поэтому без этого она
+	// висела всегда. Сравнение с запасом полпикселя — чтобы состояние не
+	// «дребезжало» между перерисовками.
+	const float area_w = renderer_.text_area_width();
+	const float area_h = renderer_.text_area_height();
+	const bool need_h = !ed_->word_wrap() && ed_->text_width() > area_w + 0.5F;
+	const bool need_v = ed_->content_height() > area_h + 0.5F;
+	if (need_h != hscroll_shown_)
+	{
+		hscroll_shown_ = need_h;
+		ShowScrollBar(hwnd_, SB_HORZ, need_h ? TRUE : FALSE);
+	}
+	if (need_v != vscroll_shown_)
+	{
+		vscroll_shown_ = need_v;
+		ShowScrollBar(hwnd_, SB_VERT, need_v ? TRUE : FALSE);
+	}
+
 	SCROLLINFO sv{};
 	sv.cbSize = sizeof(sv);
 	sv.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;

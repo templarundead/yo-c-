@@ -16,6 +16,7 @@ add_library(yo_core STATIC
 	src/usersel.cpp
 	src/dictedit.cpp
 	src/ini.cpp
+	src/ranges.cpp
 )
 add_library(yo::core ALIAS yo_core)
 

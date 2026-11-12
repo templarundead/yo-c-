@@ -1,5 +1,6 @@
 #include "render.hpp"
 
+#include "yo/ranges.hpp"
 #include "yo/utf.hpp"
 
 #include <algorithm>
@@ -1003,7 +1004,10 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	struct RowDraw
 	{
 		const Editor::Row* row = nullptr;
-		CachedLine* slot = nullptr;
+		// Индекс в cache_, а не указатель: push_back ниже перевыделяет вектор,
+		// и указатель на элемент становился висячим (падение при вставке
+		// большого текста, когда раскладок становится много).
+		std::size_t slot = 0;
 		std::size_t line = 0;
 		std::size_t line_start = 0;
 		std::size_t from = 0; // срез в байтах строки
@@ -1121,7 +1125,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 
 		RowDraw d;
 		d.row = &row;
-		d.slot = slot;
+		d.slot = static_cast<std::size_t>(slot - cache_.data());
 		d.line = i;
 		d.line_start = ed.buffer().line_start(i);
 		d.from = from_byte;
@@ -1160,7 +1164,10 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	// Абсолютный байтовый диапазон → отрезок на экране по самой раскладке.
 	const auto span = [&](const RowDraw& d, std::size_t a, std::size_t b, float& x1, float& x2) -> bool
 	{
-		if (d.slot == nullptr || d.slot->layout == nullptr)
+		if (d.slot >= cache_.size())
+			return false;
+		const CachedLine& slot = cache_[d.slot];
+		if (slot.layout == nullptr || d.to > d.bytes.size())
 			return false;
 		const std::size_t off0 = a - d.line_start;
 		const std::size_t off1 = b - d.line_start;
@@ -1171,21 +1178,27 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		if (p1 <= p0)
 			return false;
 		const float base = text_x0() + d.slice_x - scroll_x;
-		x1 = base + hit_x(d.slot->layout, p0);
-		x2 = base + hit_x(d.slot->layout, p1);
+		x1 = base + hit_x(slot.layout, p0);
+		x2 = base + hit_x(slot.layout, p1);
 		return x2 > x1;
 	};
 	// Фон диапазонов (пометки замен, найденное) — под буквами.
 	const auto fill_bands = [&](const std::vector<std::pair<std::size_t, std::size_t>>& bands,
 								const D2D1_COLOR_F& color)
 	{
+		if (bands.empty())
+			return;
 		brush_->SetColor(color);
 		for (const RowDraw& d : draws)
 		{
-			for (const auto& band : bands)
+			// Двоичный поиск в ядре (yo::overlapping_ranges): перебор всех
+			// пометок на каждый ряд «замирал» на больших файлах.
+			const auto [first, last] =
+				overlapping_ranges(bands, d.line_start + d.from, d.line_start + d.to);
+			for (std::size_t k = first; k < last; ++k)
 			{
-				const std::size_t a = std::max(band.first, d.line_start + d.from);
-				const std::size_t b = std::min(band.second, d.line_start + d.to);
+				const std::size_t a = std::max(bands[k].first, d.line_start + d.from);
+				const std::size_t b = std::min(bands[k].second, d.line_start + d.to);
 				float x1 = 0.0F;
 				float x2 = 0.0F;
 				if (!span(d, a, b, x1, x2))
@@ -1226,19 +1239,24 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	}
 
 	// Сами буквы: цвет и подчёркивание пометки ([Colors] ColorMark) —
-	// drawing effect и SetUnderline на диапазон раскладки.
+	// drawing effect и SetUnderline на диапазон раскладки. Цвет кисти
+	// обновляем каждый раз: новый цвет из окна настроек должен быть виден
+	// сразу, а не после пересоздания устройства (перезапуска программы).
+	if (mark_brush_ != nullptr)
+		mark_brush_->SetColor(yofy_text_color_);
 	brush_->SetColor(theme_.text);
 	for (RowDraw& d : draws)
 	{
 		std::vector<DWRITE_TEXT_RANGE> want;
-		if (mark_brush_ != nullptr)
+		const std::size_t abs_from = d.line_start + d.from;
+		const std::size_t abs_to = d.line_start + d.to;
+		if (mark_brush_ != nullptr && !yofy_marks.empty())
 		{
-			const std::size_t abs_from = d.line_start + d.from;
-			const std::size_t abs_to = d.line_start + d.to;
-			for (const auto& m : yofy_marks)
+			const auto [first, last] = overlapping_ranges(yofy_marks, abs_from, abs_to);
+			for (std::size_t k = first; k < last; ++k)
 			{
-				const std::size_t a = std::max(m.first, abs_from);
-				const std::size_t b = std::min(m.second, abs_to);
+				const std::size_t a = std::max(yofy_marks[k].first, abs_from);
+				const std::size_t b = std::min(yofy_marks[k].second, abs_to);
 				if (a >= b)
 					continue;
 				const auto s0 = static_cast<UINT32>(units(d.bytes.substr(d.from, a - abs_from)));
@@ -1247,25 +1265,28 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 					want.push_back(DWRITE_TEXT_RANGE{ s0, s1 - s0 });
 			}
 		}
-		bool same = want.size() == d.slot->mark_ranges.size();
+		if (d.slot >= cache_.size())
+			continue;
+		CachedLine& slot = cache_[d.slot];
+		bool same = want.size() == slot.mark_ranges.size();
 		for (std::size_t k = 0; same && k < want.size(); ++k)
-			same = want[k].startPosition == d.slot->mark_ranges[k].startPosition &&
-				   want[k].length == d.slot->mark_ranges[k].length;
+			same = want[k].startPosition == slot.mark_ranges[k].startPosition &&
+				   want[k].length == slot.mark_ranges[k].length;
 		if (!same)
 		{
-			for (const DWRITE_TEXT_RANGE& r : d.slot->mark_ranges)
+			for (const DWRITE_TEXT_RANGE& r : slot.mark_ranges)
 			{
-				d.slot->layout->SetDrawingEffect(nullptr, r);
-				d.slot->layout->SetUnderline(FALSE, r);
+				slot.layout->SetDrawingEffect(nullptr, r);
+				slot.layout->SetUnderline(FALSE, r);
 			}
 			for (const DWRITE_TEXT_RANGE& r : want)
 			{
-				d.slot->layout->SetDrawingEffect(mark_brush_, r);
-				d.slot->layout->SetUnderline(TRUE, r);
+				slot.layout->SetDrawingEffect(mark_brush_, r);
+				slot.layout->SetUnderline(TRUE, r);
 			}
-			d.slot->mark_ranges = std::move(want);
+			slot.mark_ranges = std::move(want);
 		}
-		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + d.slice_x - scroll_x, d.y), d.slot->layout, brush_,
+		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + d.slice_x - scroll_x, d.y), slot.layout, brush_,
 							D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
 

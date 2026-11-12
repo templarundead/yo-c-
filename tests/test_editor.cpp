@@ -351,3 +351,48 @@ TEST_CASE("клик: экранные координаты при прокрут
 	CHECK(ed->offset_at_client(0.0F, 1.0F) == 0);
 	CHECK(ed->offset_at_client(0.0F, 11.0F) == ed->buffer().line_start(1));
 }
+
+TEST_CASE("вставка большого текста и прокрутка (без падений)", "[editor]")
+{
+	// Регрессия: вставка длинного текста роняла программу — раскладки рядов
+	// в кэше рендерера перевыделялись, а указатели на них (теперь индексы)
+	// оставались висячими. Здесь проверяем сам редактор: вставка 2 МБ,
+	// прокрутка по всему документу и чтение геометрии видимых рядов.
+	auto ed = editor("начало");
+	ed->set_viewport(800.0F, 300.0F);
+	std::string chunk;
+	chunk.reserve(2U * 1024U * 1024U);
+	for (int i = 0; i < 20000; ++i)
+		chunk += "строка номер " + std::to_string(i) + " с текстом и словами\n";
+	ed->move_doc_end();
+	REQUIRE(ed->paste(chunk));
+	CHECK(ed->buffer().line_count() > 20000U);
+	// Прокрутка до конца и обратно: видимые ряды должны быть корректны.
+	ed->move_doc_end();
+	for (int i = 0; i < 50; ++i)
+	{
+		const std::vector<Editor::Row> rows = ed->visible_rows();
+		REQUIRE(!rows.empty());
+		for (const Editor::Row& row : rows)
+		{
+			CHECK(row.line < ed->buffer().line_count());
+			CHECK(row.from <= row.to);
+			CHECK(row.to <= ed->buffer().line_text(row.line).size());
+		}
+		ed->scroll_lines(-3);
+	}
+}
+
+TEST_CASE("пустой документ: нет ширины текста и прокрутки", "[editor]")
+{
+	// Из этого считается видимость полос прокрутки: в пустом окне не должно
+	// быть ни горизонтальной полосы, ни запаса по высоте.
+	auto ed = editor("");
+	ed->set_viewport(800.0F, 300.0F);
+	CHECK(ed->buffer().size() == 0);
+	CHECK(ed->text_width() == 0.0F);
+	CHECK(ed->content_height() <= 300.0F);
+	CHECK(ed->scroll_x() == 0.0F);
+	REQUIRE(ed->paste("короткая строка"));
+	CHECK(ed->text_width() > 0.0F);
+}
