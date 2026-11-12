@@ -41,12 +41,21 @@ struct AskRow
 	std::size_t hot_to = 0;
 };
 
+// Тон кнопки панели: «Е» — синяя, «Ё» — зелёная, остальные — системные.
+enum class AskTone : std::uint8_t
+{
+	neutral,
+	ye,
+	yo,
+};
+
 struct AskButtonView
 {
 	D2D1_RECT_F rect{};
 	std::wstring label;
 	bool focus = false;
 	bool hot = false;  // наведена мышь — видно, что кнопка нажимается
+	AskTone tone = AskTone::neutral;
 };
 
 struct AskView
@@ -126,12 +135,19 @@ public:
 	[[nodiscard]] float ui_line_height() const noexcept { return ui_line_h_; }
 	[[nodiscard]] float ui_char_width() const noexcept { return ui_char_w_; }
 
+	// Метрики текста панели вопросов: шрифт панели не меньше, чем в окне
+	// документа по умолчанию, и не зависит от Ctrl+±.
+	[[nodiscard]] float ask_line_height() const noexcept { return ask_line_h_; }
+	[[nodiscard]] float ask_char_width() const noexcept { return ask_char_w_; }
+
 	// Высота нижней полосы (статус + строка поиска) в пикселях.
 	[[nodiscard]] float status_height() const noexcept;
 	[[nodiscard]] float find_height() const noexcept;
 
 	// Ширина строки шрифтом интерфейса (Segoe UI) в пикселях — для кнопок.
 	[[nodiscard]] float measure_ui(const std::wstring& text);
+	// То же шрифтом панели вопросов (он крупнее интерфейсного).
+	[[nodiscard]] float measure_ask(const std::wstring& text);
 
 	// Полная перерисовка. `caret` — рисовать ли курсор (мигание),
 	// `ask` — панель вопросов ёфикации поверх текста.
@@ -166,12 +182,16 @@ private:
 	IDWriteTextFormat* fmt_ = nullptr;		// основной текст
 	IDWriteTextFormat* fmt_ui_ = nullptr;	// статус/поиск/меню
 	IDWriteTextFormat* fmt_center_ = nullptr; // панель вопросов: по центру
+	IDWriteTextFormat* fmt_ask_ = nullptr;	  // панель вопросов: по левому краю
 	ID2D1SolidColorBrush* brush_ = nullptr;
 	ID2D1SolidColorBrush* accent_brush_ = nullptr; // подсветка ё
 	ID2D1SolidColorBrush* dim_brush_ = nullptr;	   // затемнение под панелью вопросов
 
 	float dpi_scale_ = 1.0F;
 	float font_size_ = 15.0F;
+	// Размер шрифта панели вопросов: берётся из стартового размера текста и
+	// дальше не меняется (Ctrl+± не должен двигать панель).
+	float ask_font_size_ = 15.0F;
 	float char_w_ = 8.0F;
 	float line_h_ = 18.0F;
 	float status_h_ = 20.0F;
@@ -180,6 +200,8 @@ private:
 	float bar_h_ = 26.0F;
 	float ui_line_h_ = 16.0F;  // высота строки шрифта интерфейса
 	float ui_char_w_ = 6.0F;
+	float ask_line_h_ = 18.0F; // строка панели вопросов
+	float ask_char_w_ = 7.0F;
 	UINT width_px_ = 0;
 	UINT height_px_ = 0;
 	float width_dip_ = 0.0F;  // клиентская область в DIP (см. dpi_scale)

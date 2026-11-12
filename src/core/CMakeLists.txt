@@ -10,6 +10,7 @@ add_library(yo_core STATIC
 	src/utf.cpp
 	src/yofytext.cpp
 	src/askpanel.cpp
+	src/ini.cpp
 )
 add_library(yo::core ALIAS yo_core)
 

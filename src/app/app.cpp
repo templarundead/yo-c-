@@ -1,6 +1,7 @@
 #include "app.hpp"
 
 #include "yo/codec.hpp"
+#include "yo/ini.hpp"
 #include "yo/env.hpp"
 #include "yo/utf.hpp"
 #include "yo/mapped.hpp"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <functional>
 #include <string_view>
 #include <vector>
@@ -64,6 +66,17 @@ constexpr int kDefaultWidth = 1000;
 constexpr int kDefaultHeight = 720;
 
 std::wstring widen(std::string_view utf8) { return utf8_to_wide(utf8); }
+std::string narrow(const std::wstring& wide) { return wide_to_utf8(wide); }
+
+// Каталог программы: рядом с ним лежат yo.ini и словари по умолчанию.
+std::filesystem::path program_dir()
+{
+	wchar_t buf[32768] = L"";
+	const DWORD len = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+	if (len == 0)
+		return {};
+	return std::filesystem::path(std::wstring(buf, buf + len)).parent_path();
+}
 
 // Путь в UTF-8 для ядра (MappedFile ожидает именно UTF-8).
 std::string path_utf8(const std::filesystem::path& path) { return wide_to_utf8(path.wstring()); }
@@ -156,6 +169,9 @@ void trace(const char* what, double ms, std::size_t bytes = 0)
 		out << " " << bytes << " Б";
 	out << "\n";
 }
+
+// Сообщение без длительности (настройки, состояния).
+void trace(const char* what) { trace(what, 0.0); }
 
 // Граница слова для пункта «спросить про слово под курсором»: кириллица
 // (байты >= 0x80) — часть слова, дефис тоже, остальная пунктуация и пробелы
@@ -252,38 +268,6 @@ std::string sentence_around(const TextBuffer& buf, std::size_t line)
 	return text;
 }
 
-// Перенос текста по ширине панели: панель узкая, а предложение длинное.
-std::string wrap_text(const std::string& text, float max_width, const std::function<float(const std::string&)>& measure)
-{
-	std::string out;
-	std::string current;
-	std::size_t begin = 0;
-	while (begin < text.size())
-	{
-		std::size_t end = text.find(' ', begin);
-		if (end == std::string::npos)
-			end = text.size();
-		const std::string word = text.substr(begin, end - begin);
-		begin = end + 1;
-		if (word.empty())
-			continue;
-		const std::string probe = current.empty() ? word : current + " " + word;
-		if (!current.empty() && measure(probe) > max_width)
-		{
-			out += current;
-			out += '\n';
-			current = word;
-		}
-		else
-		{
-			current = probe;
-		}
-	}
-	if (!current.empty())
-		out += current;
-	return out;
-}
-
 // Тёмное оформление системных элементов окна.
 //
 // Полосы прокрутки, рамка и заголовок рисуются системой, поэтому цветом
@@ -349,9 +333,125 @@ App::~App()
 
 // ---------------------------------------------------------------- создание
 
+namespace {
+
+} // namespace
+
+void App::load_settings()
+{
+	ini_path_ = settings_path();
+	std::ifstream in(ini_path_, std::ios::binary);
+	if (!in)
+	{
+		trace("настройки: yo.ini не найден, берём значения по умолчанию");
+		return;
+	}
+	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	Ini ini;
+	ini.parse(text);
+
+	// Имена ключей — как в yo.ini оригинала (FORMATS.md §3), чтобы подходил
+	// и файл от старого ёфикатора.
+	constexpr std::string_view kYo = "Yo";
+	font_size_ = std::clamp(ini.get_float(kYo, "FontSize", font_size_), 6.0F, 96.0F);
+	always_ask_ = ini.get_bool(kYo, "AlwaysAsk", always_ask_);
+	silent_yofy_ = ini.get_bool(kYo, "SilentYofy", silent_yofy_);
+	mark_ = ini.get_bool(kYo, "Mark", mark_);
+	propose_last_ = ini.get_bool(kYo, "ProposeLast", propose_last_);
+	regexs_ = ini.get_bool(kYo, "RegExprs", regexs_);
+	to_confirm_abbr_ = ini.get_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+
+	const auto get_w = [&](std::string_view key)
+	{ return widen(ini.get(kYo, key)); };
+	dict_setting_ = get_w("Dictionary");
+	regex_setting_ = get_w("RegExprDictionary");
+
+	// Геометрия окна — как в оригинале: четыре отдельных ключа.
+	const long long left = ini.get_int(kYo, "WindowLeft", 0);
+	const long long top = ini.get_int(kYo, "WindowTop", 0);
+	const long long width = ini.get_int(kYo, "WindowWidth", 0);
+	const long long height = ini.get_int(kYo, "WindowHeight", 0);
+	if (width > 200 && height > 200)
+	{
+		saved_rect_ = RECT{ static_cast<LONG>(left), static_cast<LONG>(top),
+							static_cast<LONG>(left + width), static_cast<LONG>(top + height) };
+		has_saved_rect_ = true;
+	}
+	saved_maximized_ = ini.get_bool(kYo, "Maximized", false);
+	trace("настройки: загружены из yo.ini");
+}
+
+void App::save_settings()
+{
+	if (ini_path_.empty())
+		ini_path_ = settings_path();
+
+	// Файл перезаписывается целиком, поэтому сначала читаем его: чужие
+	// ключи (MRU, цвета, панель инструментов) не должны теряться.
+	Ini ini;
+	{
+		std::ifstream in(ini_path_, std::ios::binary);
+		if (in)
+		{
+			const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			ini.parse(text);
+		}
+	}
+	constexpr std::string_view kYo = "Yo";
+	ini.set_bool(kYo, "AlwaysAsk", always_ask_);
+	ini.set_bool(kYo, "SilentYofy", silent_yofy_);
+	ini.set_bool(kYo, "Mark", mark_);
+	ini.set_bool(kYo, "ProposeLast", propose_last_);
+	ini.set_bool(kYo, "RegExprs", regexs_);
+	ini.set_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+	ini.set_float(kYo, "FontSize", font_size_);
+	if (!dict_setting_.empty())
+		ini.set(kYo, "Dictionary", narrow(dict_setting_));
+	if (!regex_setting_.empty())
+		ini.set(kYo, "RegExprDictionary", narrow(regex_setting_));
+
+	if (hwnd_ != nullptr)
+	{
+		WINDOWPLACEMENT wp{};
+		wp.length = sizeof(wp);
+		RECT r{};
+		if (GetWindowPlacement(hwnd_, &wp))
+			r = wp.rcNormalPosition; // обычные (не развёрнутые) габариты
+		else
+			GetWindowRect(hwnd_, &r);
+		ini.set_int(kYo, "WindowLeft", r.left);
+		ini.set_int(kYo, "WindowTop", r.top);
+		ini.set_int(kYo, "WindowWidth", r.right - r.left);
+		ini.set_int(kYo, "WindowHeight", r.bottom - r.top);
+		ini.set_bool(kYo, "Maximized", IsZoomed(hwnd_) != 0);
+	}
+
+	const std::string text = "; Ё (yo-c-) — настройки редактора. Файл можно править руками.\n" + ini.dump();
+	std::ofstream out(ini_path_, std::ios::binary | std::ios::trunc);
+	if (!out)
+	{
+		trace("настройки: не удалось записать yo.ini");
+		return;
+	}
+	out.write(text.data(), static_cast<std::streamsize>(text.size()));
+	trace("настройки: сохранены в yo.ini");
+}
+
+std::filesystem::path App::settings_path() const
+{
+	wchar_t buf[32768] = L"";
+	const DWORD len = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+	if (len == 0)
+		return std::filesystem::path(L"yo.ini");
+	std::filesystem::path path(std::wstring(buf, buf + len));
+	path.replace_filename(L"yo.ini");
+	return path;
+}
+
 bool App::create(HINSTANCE hinst, int cmd_show, const std::wstring& file)
 {
 	hinst_ = hinst;
+	load_settings();
 
 	WNDCLASSEXW wc{};
 	wc.cbSize = sizeof(wc);
@@ -365,13 +465,18 @@ bool App::create(HINSTANCE hinst, int cmd_show, const std::wstring& file)
 	if (RegisterClassExW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
 		return false;
 
+	const int wx = has_saved_rect_ ? saved_rect_.left : CW_USEDEFAULT;
+	const int wy = has_saved_rect_ ? saved_rect_.top : CW_USEDEFAULT;
+	const int ww = has_saved_rect_ ? static_cast<int>(saved_rect_.right - saved_rect_.left) : kDefaultWidth;
+	const int wh = has_saved_rect_ ? static_cast<int>(saved_rect_.bottom - saved_rect_.top) : kDefaultHeight;
 	hwnd_ = CreateWindowExW(0, L"YoCEditorWindow", L"Ё (yo-c-)", WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_HSCROLL,
-							CW_USEDEFAULT, CW_USEDEFAULT, kDefaultWidth, kDefaultHeight, nullptr, nullptr,
-							hinst, this);
+							wx, wy, ww, wh, nullptr, nullptr, hinst, this);
 	if (hwnd_ == nullptr)
 		return false;
 
 	ShowWindow(hwnd_, cmd_show);
+	if (saved_maximized_)
+		ShowWindow(hwnd_, SW_SHOWMAXIMIZED);
 	UpdateWindow(hwnd_);
 
 	if (!file.empty())
@@ -949,14 +1054,17 @@ std::wstring App::status_text() const
 		}
 		text += L"   Esc — прервать";
 	}
-	if (last_yofy_.rolled_back)
-		text += L"   ёфикация: откат, изменений нет";
-	else if (last_yofy_.lines > 0)
+	if (last_yofy_.lines > 0)
 	{
 		text += L"   ёфикация: замен ";
 		text += std::to_wstring(last_yofy_.replaced);
 		text += L", строк ";
 		text += std::to_wstring(last_yofy_.lines);
+		if (last_yofy_.reverted > 0)
+		{
+			text += L", откатов ";
+			text += std::to_wstring(last_yofy_.reverted);
+		}
 		if (last_yofy_.cancelled)
 			text += L" (прервано)";
 	}
@@ -1473,11 +1581,13 @@ void App::on_command(int id)
 		break;
 	case kCmdAlwaysAsk:
 		set_always_ask(!always_ask_);
+		save_settings(); // опция запоминается между запусками
 		break;
 	case kCmdFontBigger:
 		if (renderer_.set_font_size(font_size_ + 1.0F, hwnd_))
 		{
 			font_size_ = renderer_.font_size();
+			save_settings();
 			refresh_view();
 		}
 		break;
@@ -1485,6 +1595,7 @@ void App::on_command(int id)
 		if (renderer_.set_font_size(font_size_ - 1.0F, hwnd_))
 		{
 			font_size_ = renderer_.font_size();
+			save_settings();
 			refresh_view();
 		}
 		break;
@@ -1524,6 +1635,7 @@ void App::on_command(int id)
 		break;
 	case kCmdSilentYofy:
 		set_silent_yofy(!silent_yofy_);
+		save_settings();
 		break;
 	default:
 		break;
@@ -1722,8 +1834,19 @@ bool App::ensure_yoficator()
 	if (yofy_)
 		return true;
 
-	const std::filesystem::path dict_path = find_data_file(L"yox.dat");
-	const std::filesystem::path regex_path = find_data_file(L"yo_regexpr.dat");
+	// Пути из yo.ini (как в оригинале) важнее поиска рядом с exe; короткие
+	// имена разрешаются от каталога программы.
+	const auto resolve = [](const std::wstring& name, const wchar_t* fallback)
+	{
+		if (name.empty())
+			return find_data_file(fallback);
+		std::filesystem::path path(name);
+		if (path.is_relative())
+			path = program_dir() / path;
+		return path;
+	};
+	const std::filesystem::path dict_path = resolve(dict_setting_, L"yox.dat");
+	const std::filesystem::path regex_path = resolve(regex_setting_, L"yo_regexpr.dat");
 	if (dict_path.empty())
 	{
 		MessageBoxW(hwnd_,
@@ -1751,8 +1874,11 @@ bool App::ensure_yoficator()
 	}
 
 	Options opts;
-	opts.mark = true;
+	opts.mark = mark_;
 	opts.always_ask = always_ask_;
+	opts.propose_last = propose_last_;
+	opts.regexs = regexs_;
+	opts.to_confirm_abbr = to_confirm_abbr_;
 	yofy_ = std::make_unique<Yoficator>(*dict_, regexdict_.get(), opts);
 	// Неоднозначные слова — в панель вопросов (как AskPanel оригинала).
 	yofy_->set_ask([this](const AskRequest& req) { return ask_word(req); });
@@ -1897,13 +2023,9 @@ void App::ask_build_view()
 	RECT rc{};
 	GetClientRect(hwnd_, &rc);
 
-	AskTexts texts = make_ask_texts(ask_.req);
-	if (ask_count_ > 0)
-	{
-		texts.reason += "   (вопрос ";
-		texts.reason += std::to_string(ask_count_);
-		texts.reason += ", Esc — прервать)";
-	}
+	// Заголовок панели — только «Выберите верный вариант» (или причина):
+	// счётчик вопросов и подсказки ушли, как просил пользователь.
+	const AskTexts texts = make_ask_texts(ask_.req);
 	// Раскладка панели — в DIP, как и всё остальное: GetClientRect отдаёт
 	// физические пиксели, поэтому размеры делим на масштаб.
 	const float scale = std::max(1.0F, renderer_.dpi_scale());
@@ -1916,8 +2038,8 @@ void App::ask_build_view()
 	in.padding = renderer_.padding();
 	// Меню, панель вопросов и статус рисуются шрифтом интерфейса и не должны
 	// расти вместе с текстом: Ctrl+± меняет только текст.
-	in.line_height = renderer_.ui_line_height();
-	in.char_width = renderer_.ui_char_width();
+	in.line_height = renderer_.ask_line_height();
+	in.char_width = renderer_.ask_char_width();
 	in.variants = texts.variants;
 	in.reason = texts.reason;
 	// Оригинал показывает панель полосой во всю ширину над статусом,
@@ -1955,11 +2077,9 @@ void App::ask_build_view()
 
 	// В панели — всё предложение с этим словом: по одному слову невозможно
 	// понять, где Е, а где Ё.
-	const float max_context_w = std::max(220.0F, in.client_w - 2.0F * renderer_.padding() - 16.0F);
-	std::string context = sentence_around(*buf_, ask_line);
-	context = wrap_text(context, max_context_w,
-		[this](const std::string& text) { return renderer_.measure_ui(widen(text)); });
-	in.context = std::move(context);
+	// Переносов нет: предложение идёт одной строкой во всю ширину полосы,
+	// а слово в ней стоит по центру (рендерер сам подрезает края).
+	in.context = sentence_around(*buf_, ask_line);
 
 	// Ширину строк меряет тот же шрифт, которым рисуем панель.
 	const AskLayout layout = layout_ask_panel(
@@ -1989,9 +2109,20 @@ void App::ask_build_view()
 																: AskKind::normal;
 		row.rect = D2D1::RectF(left, layout.rows[i].y + dy, right, layout.rows[i].y + dy + layout.rows[i].h);
 		// Слово внутри предложения выделяем и в панели — видно, о чём вопрос.
-		if (!ask_.word_text.empty())
+		// Ищем его по границам слова: иначе подсветится первое вхождение.
+		if (!ask_.word_text.empty() && layout.rows[i].kind == AskRowKind::context)
 		{
-			const std::size_t at = row.text.find(ask_.word_text);
+			const auto is_alpha = [](wchar_t c) { return (c >= L'А' && c <= L'я') || c == L'Ё' || c == L'ё'; };
+			std::size_t at = row.text.find(ask_.word_text);
+			while (at != std::wstring::npos)
+			{
+				const bool left_ok = at == 0 || !is_alpha(row.text[at - 1]);
+				const std::size_t after = at + ask_.word_text.size();
+				const bool right_ok = after >= row.text.size() || !is_alpha(row.text[after]);
+				if (left_ok && right_ok)
+					break;
+				at = row.text.find(ask_.word_text, at + 1);
+			}
 			if (at != std::wstring::npos)
 			{
 				row.has_hot = true;
@@ -2061,6 +2192,9 @@ AskView App::ask_view() const
 		const auto index = static_cast<std::ptrdiff_t>(&b - ask_.buttons.data());
 		v.focus = index == ask_.focus;
 		v.hot = index == ask_.hot;
+		v.tone = b.answer == AskAnswer::ye		 ? AskTone::ye
+				 : b.answer == AskAnswer::yo	 ? AskTone::yo
+												 : AskTone::neutral;
 		view.buttons.push_back(std::move(v));
 	}
 	return view;
@@ -2733,6 +2867,7 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	case WM_CLOSE:
 		if (!ask_save_changes())
 			return 0;
+		save_settings(); // шрифт, положение окна, опции ёфикации — в yo.ini
 		KillTimer(hwnd_, kCaretTimer);
 		DestroyWindow(hwnd_);
 		return 0;

@@ -139,22 +139,48 @@ TEST_CASE("ёфикация: вопросы движка и ответы пол�
 	CHECK(buf->text() == "\u0432\u0441\u0435 \u0435\u0449\u0451\n");
 }
 
-TEST_CASE("ёфикация: «Откат» не меняет документ, «Прервать» сохраняет сделанное", "[yofytext]")
+TEST_CASE("ёфикация: «Откат» снимает последнюю замену, «Прервать» останавливает проход", "[yofytext]")
 {
 	Engine e;
 	Options opts;
 	opts.always_ask = true;
 	e.yofy.set_options(opts);
 
-	SECTION("откат на втором вопросе")
+	SECTION("откат на третьем вопросе оставляет первые ответы")
+	{
+		// Три вопроса: «все», «еще», «все». Первые два — «Ё», на третьем
+		// «Откат»: он отменяет ПРЕДЫДУЩУЮ замену («ещё» → «еще»), а первые
+		// ответы остаются в документе. Раньше откат сбрасывал весь проход.
+		auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435 \u0432\u0441\u0435\n");
+		std::size_t n = 0;
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 3 ? AskAnswer::undo : AskAnswer::yo; });
+		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+		CHECK_FALSE(r.cancelled);
+		CHECK(r.changed);
+		CHECK(r.reverted == 1);
+		CHECK(buf->text() == "\u0432\u0441\u0451 \u0435\u0449\u0435 \u0432\u0441\u0435\n");
+	}
+
+	SECTION("откат, когда отменять нечего — как «пропустить»")
 	{
 		auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435\n");
+		std::size_t n = 0;
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 1 ? AskAnswer::undo : AskAnswer::yo; });
+		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+		CHECK_FALSE(r.cancelled);
+		CHECK(r.changed);
+		CHECK(r.reverted == 0);
+		CHECK(buf->text() == "\u0432\u0441\u0435 \u0435\u0449\u0451\n");
+	}
+
+	SECTION("откат последней замены возвращает документ к исходному")
+	{
+		// «все все»: первое слово — «Ё», на втором «Откат» снимает его.
+		auto buf = tb("\u0432\u0441\u0435 \u0432\u0441\u0435\n");
 		const std::string before = buf->text();
 		std::size_t n = 0;
-		e.yofy.set_ask([&](const AskRequest&) { return ++n == 2 ? AskAnswer::undo : AskAnswer::yo; });
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 1 ? AskAnswer::yo : AskAnswer::undo; });
 		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
-		CHECK(r.rolled_back);
-		CHECK_FALSE(r.cancelled);
 		CHECK_FALSE(r.changed);
 		CHECK(buf->text() == before);
 		CHECK_FALSE(buf->can_undo());

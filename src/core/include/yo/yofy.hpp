@@ -113,6 +113,14 @@ public:
 	Yoficator(Dictionary& dict, RegexDictionary* regex_dic, Options opts);
 
 	void set_ask(AskFn fn) { ask_ = std::move(fn); }
+
+	// Каждая сделанная замена: вызывающий ведёт стек применённых замен, чтобы
+	// «Откат» мог снять ровно последнюю (а не весь проход).
+	using ChangeHook = std::function<void(const Change&)>;
+	// Момент ответа «Откат» — снять последнюю замену прямо здесь и сейчас.
+	using UndoHook = std::function<void()>;
+	void set_change_hook(ChangeHook fn) { change_hook_ = std::move(fn); }
+	void set_undo_hook(UndoHook fn) { undo_hook_ = std::move(fn); }
 	void set_regex_log(RegexLogFn fn) { regex_log_ = std::move(fn); }
 
 	// Обработка одной строки (изменяет её на месте: только равные по длине
@@ -121,8 +129,10 @@ public:
 	bool process_line(UString& text, std::size_t line_no, const LineSource& source,
 					  std::vector<Change>* changes);
 
-	// Пользователь выбрал «Откат» на последнем вопросе: вызывающий должен
-	// отменить все изменения этого прохода.
+	// Пользователь выбрал «Откат» на последнем вопросе. Счётчик накопительный
+	// за проход: вызывающий снимает столько же последних замен (а не весь
+	// проход целиком — «Откат» отменяет один шаг, как Ctrl+Z).
+	[[nodiscard]] std::size_t undo_requests() const noexcept { return undo_requests_; }
 	[[nodiscard]] bool undo_requested() const noexcept { return to_make_undo_; }
 
 	[[nodiscard]] const Stats& stats() const noexcept { return stats_; }
@@ -174,6 +184,9 @@ private:
 	// Состояние текущего слова (аналог глобальных переменных оригинала).
 	bool was_ask_ = false;
 	bool to_make_undo_ = false;
+	std::size_t undo_requests_ = 0;
+	ChangeHook change_hook_;
+	UndoHook undo_hook_;
 	bool to_check_abbreviation_ = false;
 	bool to_check_ellipsis_ = false;
 	UString* current_line_ = nullptr;

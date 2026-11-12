@@ -202,6 +202,12 @@ Delphi `string` (AnsiString) — байты CP1251, индексы 1-based.
 
 ## 3. Файл инициализации `yo.ini`
 
+> **Реализовано в yo-c-** (`yo::Ini` + `App::load_settings/save_settings`):
+> читаются и пишутся `[Yo] AlwaysAsk`, `Mark`, `ProposeLast`, `RegExprs`,
+> `ToConfirmAbbr`, `FontSize`, `WindowLeft/Top/Width/Height`, `Maximized`,
+> `Dictionary`, `RegExprDictionary`, плюс наше расширение `SilentYofy`
+> («без вопросов»). Остальные ключи оригинала сохраняются как есть.
+
 - Расположение: `ProgramDirectory\yo.ini` (каталог exe, не AppData;
   `FullIniFileName = ProgramDirectory + '\' + 'yo.ini'`;
   `SetCurrentDir(ProgramDirectory)` при старте). Формат — стандартный

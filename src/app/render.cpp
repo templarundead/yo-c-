@@ -58,6 +58,11 @@ void Renderer::shutdown()
 		fmt_center_->Release();
 		fmt_center_ = nullptr;
 	}
+	if (fmt_ask_ != nullptr)
+	{
+		fmt_ask_->Release();
+		fmt_ask_ = nullptr;
+	}
 	if (rt_ != nullptr)
 	{
 		rt_->Release();
@@ -80,6 +85,9 @@ bool Renderer::init(HWND hwnd, float font_size)
 {
 	hwnd_ = hwnd;
 	font_size_ = font_size;
+	// Панель вопросов — того же размера, что стартовый текст, но не меньше
+	// 12 DIP; при зуме она не масштабируется.
+	ask_font_size_ = std::clamp(font_size, 12.0F, 40.0F);
 	if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr,
 								 reinterpret_cast<void**>(&factory_))))
 		return false;
@@ -126,6 +134,11 @@ bool Renderer::measure_font(HWND hwnd)
 		fmt_center_->Release();
 		fmt_center_ = nullptr;
 	}
+	if (fmt_ask_ != nullptr)
+	{
+		fmt_ask_->Release();
+		fmt_ask_ = nullptr;
+	}
 	// Моноширинный шрифт: Cascadia Mono есть в Windows 11/10 (Terminal),
 	// Consolas — надёжный запасной вариант, дальше DirectWrite сам подберёт.
 	const wchar_t* families[] = { L"Cascadia Mono", L"Consolas", L"Courier New" };
@@ -151,14 +164,26 @@ bool Renderer::measure_font(HWND hwnd)
 	fmt_ui_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 	fmt_ui_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-	// Панель вопросов: подписи и строки по центру, как в оригинале.
+	// Панель вопросов: подписи и строки по центру, как в оригинале. Шрифт
+	// панели — не меньше, чем текст окна по умолчанию (15 DIP), и не зависит
+	// от Ctrl+±, иначе панель «прыгала» вместе с зумом.
+	const float ask_font = ask_font_size_;
 	if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-										DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0F, L"ru-ru",
-										&fmt_center_)))
+										DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, ask_font,
+										L"ru-ru", &fmt_center_)))
 		return false;
 	fmt_center_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 	fmt_center_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 	fmt_center_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+	// Тот же размер, но с выравниванием по левому краю: так рисуется строка
+	// с подсвеченным словом (куски ставятся по координатам).
+	if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+										DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, ask_font,
+										L"ru-ru", &fmt_ask_)))
+		return false;
+	fmt_ask_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+	fmt_ask_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+	fmt_ask_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
 	// Ширина символа: 64 одинаковых глифа делим на 64.
 	const std::wstring probe(64, L'0');
@@ -175,22 +200,24 @@ bool Renderer::measure_font(HWND hwnd)
 	char_w_ = std::max(1.0F, tm.widthIncludingTrailingWhitespace / 64.0F);
 	line_h_ = std::max(1.0F, std::ceil(tm.height));
 
-	// Метрики шрифта интерфейса: им меряются меню и панель вопросов, и они
-	// не должны меняться вместе с размером текста.
+	// Метрики шрифта интерфейса (меню, статус) и шрифта панели вопросов:
+	// они не должны меняться вместе с размером текста.
+	const auto measure_ui_format = [&](IDWriteTextFormat* format, float& char_w, float& line_h)
 	{
-		IDWriteTextLayout* ui_layout = nullptr;
-		if (SUCCEEDED(dwrite_->CreateTextLayout(probe.c_str(), static_cast<UINT32>(probe.size()), fmt_ui_,
-												4096.0F, 4096.0F, &ui_layout)))
+		IDWriteTextLayout* layout = nullptr;
+		if (FAILED(dwrite_->CreateTextLayout(probe.c_str(), static_cast<UINT32>(probe.size()), format,
+											4096.0F, 4096.0F, &layout)))
+			return;
+		DWRITE_TEXT_METRICS um{};
+		if (SUCCEEDED(layout->GetMetrics(&um)))
 		{
-			DWRITE_TEXT_METRICS um{};
-			if (SUCCEEDED(ui_layout->GetMetrics(&um)))
-			{
-				ui_char_w_ = std::max(1.0F, um.widthIncludingTrailingWhitespace / 64.0F);
-				ui_line_h_ = std::max(1.0F, std::ceil(um.height));
-			}
-			ui_layout->Release();
+			char_w = std::max(1.0F, um.widthIncludingTrailingWhitespace / 64.0F);
+			line_h = std::max(1.0F, std::ceil(um.height));
 		}
-	}
+		layout->Release();
+	};
+	measure_ui_format(fmt_ui_, ui_char_w_, ui_line_h_);
+	measure_ui_format(fmt_center_, ask_char_w_, ask_line_h_);
 
 	// Всё рисуется в DIP, а целевой буфер сам масштабирует DIP → пиксели
 	// (SetDpi). Умножать размеры на dpi_scale_ нельзя: полоса статуса уезжала
@@ -344,6 +371,20 @@ void Renderer::draw_find_bar(const std::wstring& text, bool focus)
 				   D2D1::RectF(padding_ + 2.0F, top + 2.0F, width_dip_ - padding_,
 							   top + find_h_ - 2.0F),
 				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+float Renderer::measure_ask(const std::wstring& text)
+{
+	if (dwrite_ == nullptr || fmt_ask_ == nullptr || text.empty())
+		return 0.0F;
+	IDWriteTextLayout* layout = nullptr;
+	if (FAILED(dwrite_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt_ask_, 4096.0F,
+										4096.0F, &layout)))
+		return 0.0F;
+	DWRITE_TEXT_METRICS tm{};
+	const HRESULT hr = layout->GetMetrics(&tm);
+	layout->Release();
+	return SUCCEEDED(hr) ? tm.widthIncludingTrailingWhitespace : 0.0F;
 }
 
 float Renderer::measure_ui(const std::wstring& text)
@@ -508,38 +549,63 @@ void Renderer::draw_ask(const AskView& view)
 			continue;
 		}
 
-		// Строка с обрабатываемым словом: она центрируется вручную, чтобы
-		// слово можно было нарисовать красным на своём месте.
+		// Строка с обрабатываемым словом: слово стоит ровно по центру полосы,
+		// остальное предложение уходит под край и подрезается (переносов нет).
 		const std::wstring prefix = row.text.substr(0, row.hot_from);
 		const std::wstring word = row.text.substr(row.hot_from, row.hot_to - row.hot_from);
 		const std::wstring suffix = row.text.substr(row.hot_to);
-		const float w_prefix = measure_ui(prefix);
-		const float w_word = measure_ui(word);
-		const float w_total = w_prefix + w_word + measure_ui(suffix);
-		const float x0 = row.rect.left +
-						 std::max(0.0F, (row.rect.right - row.rect.left - w_total) * 0.5F);
-		const auto draw = [&](const std::wstring& part, float left, float right, const D2D1_COLOR_F& color)
+		const float w_prefix = measure_ask(prefix);
+		const float w_word = measure_ask(word);
+		const float mid = (row.rect.left + row.rect.right) * 0.5F;
+		const float x0 = mid - (w_prefix + w_word * 0.5F);
+		rt_->PushAxisAlignedClip(row.rect, D2D1_ANTIALIAS_MODE_ALIASED);
+		const auto draw = [&](const std::wstring& part, float left, const D2D1_COLOR_F& color)
 		{
-			if (part.empty() || right <= left)
+			if (part.empty())
 				return;
 			brush_->SetColor(color);
-			rt_->DrawTextW(part.c_str(), static_cast<UINT32>(part.size()), fmt_ui_,
-						   D2D1::RectF(left, row.rect.top, right, row.rect.bottom), brush_,
+			rt_->DrawTextW(part.c_str(), static_cast<UINT32>(part.size()), fmt_ask_,
+						   D2D1::RectF(left, row.rect.top, row.rect.right, row.rect.bottom), brush_,
 						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
 		};
-		draw(prefix, x0, x0 + w_prefix, base);
-		draw(word, x0 + w_prefix, x0 + w_prefix + w_word + 1.0F, D2D1::ColorF(0.95F, 0.36F, 0.36F));
-		draw(suffix, x0 + w_prefix + w_word, row.rect.right, base);
+		draw(prefix, x0, base);
+		draw(word, x0 + w_prefix, D2D1::ColorF(0.95F, 0.36F, 0.36F));
+		draw(suffix, x0 + w_prefix + w_word, base);
+		rt_->PopAxisAlignedClip();
 	}
 
 	for (const AskButtonView& b : view.buttons)
 	{
 		const bool lit = b.focus || b.hot;
-		brush_->SetColor(lit ? theme_.selection : theme_.status_bg);
+		// Системные тона: без «синих рамок». «Е» — синяя кнопка, «Ё» —
+		// зелёная, остальные — как обычные кнопки окна.
+		D2D1_COLOR_F fill = theme_.status_bg;
+		D2D1_COLOR_F border = theme_.gutter;
+		D2D1_COLOR_F text = theme_.text;
+		switch (b.tone)
+		{
+		case AskTone::ye:
+			fill = lit ? D2D1::ColorF(0.18F, 0.34F, 0.55F) : D2D1::ColorF(0.14F, 0.24F, 0.38F);
+			border = D2D1::ColorF(0.28F, 0.44F, 0.64F);
+			break;
+		case AskTone::yo:
+			fill = lit ? D2D1::ColorF(0.16F, 0.40F, 0.24F) : D2D1::ColorF(0.12F, 0.28F, 0.18F);
+			border = D2D1::ColorF(0.26F, 0.50F, 0.32F);
+			break;
+		case AskTone::neutral:
+		default:
+			if (lit)
+			{
+				fill = theme_.selection;
+				border = theme_.accent;
+			}
+			break;
+		}
+		brush_->SetColor(fill);
 		rt_->FillRectangle(b.rect, brush_);
-		brush_->SetColor(lit ? theme_.accent : theme_.status_fg);
+		brush_->SetColor(border);
 		rt_->DrawRectangle(b.rect, brush_, 1.0F);
-		brush_->SetColor(lit ? theme_.text : theme_.status_fg);
+		brush_->SetColor(text);
 		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_,
 					   D2D1::RectF(b.rect.left + padding_ * 0.5F, b.rect.top,
 								   b.rect.right - padding_ * 0.5F, b.rect.bottom),

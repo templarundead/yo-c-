@@ -37,6 +37,57 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 	BufferLineSource source(buf);
 	std::vector<std::string> new_lines;
 	new_lines.reserve(last - first + 1);
+	// Тексты строк диапазона (только для строк с заменами): «Откат» может
+	// снять замену в уже пройденной строке, и её придётся перекодировать.
+	std::vector<UString> line_texts;
+	line_texts.reserve(last - first + 1);
+
+	// Сделанные замены в порядке применения: «Откат» снимает последнюю.
+	struct Edit
+	{
+		std::size_t line = 0;
+		std::size_t offset = 0;
+		char32_t old_ch = 0;
+		char32_t new_ch = 0;
+	};
+	std::vector<Edit> edits;
+
+	// Текущая строка и её индекс: «Откат» снимает замену прямо в момент
+	// ответа, поэтому стек замен и строка должны быть доступны из хуков.
+	UString current;
+	std::size_t current_index = 0;
+	auto revert_last = [&]()
+	{
+		if (edits.empty())
+			return; // отменять нечего — как «пропустить»
+		const Edit e = edits.back();
+		edits.pop_back();
+		const std::size_t k = e.line - first;
+		UString& target = e.line == current_index ? current : line_texts[k];
+		if (e.offset < target.size() && target[e.offset] == e.new_ch)
+			target[e.offset] = e.old_ch;
+		if (e.line != current_index && k < new_lines.size())
+			new_lines[k] = encode_line(target, Encoding::utf8);
+		if (result.replaced > 0)
+			--result.replaced;
+		++result.reverted;
+	};
+	yofy.set_change_hook([&](const Change& c)
+						 {
+							 edits.push_back({ current_index, c.offset, c.old_ch, c.new_ch });
+							 ++result.replaced;
+						 });
+	yofy.set_undo_hook(revert_last);
+	// Хуки ссылаются на локальные переменные — снимаем их на выходе.
+	struct HookGuard
+	{
+		Yoficator& y;
+		~HookGuard()
+		{
+			y.set_change_hook({});
+			y.set_undo_hook({});
+		}
+	} hook_guard{ yofy };
 
 	bool any_change = false;
 	std::size_t changed_lines = 0;
@@ -53,14 +104,16 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 		const std::string_view bytes = buf.line_text(i);
 		const UString before = decode_line({ reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size() },
 										   Encoding::utf8);
-		UString text = before;
-		std::vector<Change> changes;
-		const bool ok = yofy.process_line(text, i, source, &changes);
+		const std::size_t replaced_before = result.replaced;
+		current = before;
+		current_index = i;
+		const bool ok = yofy.process_line(current, i, source, nullptr);
 		++result.lines;
 		++done;
-		result.replaced += changes.size();
-		if (!changes.empty())
+		if (result.replaced > replaced_before)
 			any_change = true;
+		UString& text = current;
+		line_texts.push_back(result.replaced > replaced_before ? text : UString());
 		if (text != before)
 		{
 			new_lines.push_back(encode_line(text, Encoding::utf8));
@@ -72,9 +125,9 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 		}
 		if (!ok)
 		{
-			// «Откат» отменяет весь проход, «Прервать» оставляет сделанное.
-			result.rolled_back = yofy.undo_requested();
-			result.cancelled = !result.rolled_back;
+			// «Прервать» останавливает проход, оставляя сделанное. «Откат»
+			// сюда не попадает: он снимает один шаг и разбор продолжается.
+			result.cancelled = true;
 			break;
 		}
 	}

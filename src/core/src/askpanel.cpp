@@ -92,71 +92,65 @@ AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measur
 		return text;
 	};
 
-	// Левая колонка — выбор написания и откат, правая — «всегда» и выход.
+	// Две колонки: слева выбор написания, справа «всегда»/«пропустить».
+	// «Прервать» — отдельной кнопкой во всю ширину этих двух колонок.
 	std::vector<Entry> left;
 	left.push_back({ AskChoice::ye, key(w1.empty() ? std::string("Е") : w1, "1") });
-	if (!w2.empty())
-		left.push_back({ AskChoice::yo, key(w2, "2") });
+	left.push_back({ AskChoice::yo, key(w2.empty() ? std::string("Ё") : w2, "2") });
 	left.push_back({ AskChoice::undo, key(std::string("Откат"), "6") });
 
-	std::vector<Entry> right = {
-		{ AskChoice::ye_all, key(std::string("Всегда Е"), "3") },
-		{ AskChoice::yo_all, key(std::string("Всегда Ё"), "4") },
-		{ AskChoice::skip, key(std::string("Пропустить"), "5") },
-		{ AskChoice::cancel, key(std::string("Прервать"), "Esc") },
-	};
+	std::vector<Entry> right;
+	right.push_back({ AskChoice::ye_all, key(std::string("Всегда Е"), "3") });
+	right.push_back({ AskChoice::yo_all, key(std::string("Всегда Ё"), "4") });
+	right.push_back({ AskChoice::skip, key(std::string("Пропустить"), "5") });
+	const Entry cancel_entry{ AskChoice::cancel, key(std::string("Прервать"), "Esc") };
 
 	const auto column_w = [&](const std::vector<Entry>& column)
 	{
 		float w = 0.0F;
 		for (const Entry& e : column)
 			w = std::max(w, width(e.label));
-		return std::min(avail_w, std::max(14.0F * cw, w + 3.0F * gap));
+		w = std::max(w, width(cancel_entry.label) * 0.5F);
+		return std::min(avail_w, std::max(12.0F * cw, w + 3.0F * gap));
 	};
 
-	// Две колонки; если не влезают — одна, но кнопки остаются кликабельными.
-	bool two_columns = column_w(left) + 2.0F * gap + column_w(right) <= avail_w;
-	float col0_w = column_w(left);
-	float col1_w = column_w(right);
+	// Две колонки; не влезают — одна колонка (кнопки всё равно нажимаются).
+	const bool two_columns = column_w(left) + 2.0F * gap + column_w(right) <= avail_w;
+	float col_w = two_columns ? column_w(left) : 0.0F;
+	float col_w2 = two_columns ? column_w(right) : 0.0F;
 	std::vector<Entry> single;
 	if (!two_columns)
 	{
-		for (const Entry& e : left)
-			single.push_back(e);
-		for (const Entry& e : right)
-			single.push_back(e);
-		col0_w = column_w(single);
+		single = left;
+		single.push_back(cancel_entry);
+		single.push_back(right[0]);
+		single.push_back(right[1]);
+		single.push_back(right[2]);
+		float w = 0.0F;
+		for (const Entry& e : single)
+			w = std::max(w, width(e.label));
+		col_w = std::min(avail_w, std::max(12.0F * cw, w + 3.0F * gap));
 	}
-	const std::size_t rows = two_columns ? std::max(left.size(), right.size()) : single.size();
 
-	// Строки текста: заголовок и предложение с обрабатываемым словом.
+	// Строки текста: сначала предложение с обрабатываемым словом, затем
+	// заголовок — они идут над кнопками, а не над всем блоком.
 	std::string title = clip_to_width(in.reason, avail_w, measure, cw);
+	// Контекст не переносим и не режем: слово должно стоять по центру полосы,
+	// а края предложения подрежет рисование.
 	std::vector<std::string> context;
-	{
-		std::size_t begin = 0;
-		const std::string& ctx = in.context;
-		while (begin <= ctx.size() && !ctx.empty())
-		{
-			const std::size_t end = ctx.find('\n', begin);
-			const std::string part =
-				end == std::string::npos ? ctx.substr(begin) : ctx.substr(begin, end - begin);
-			context.push_back(clip_to_width(part, avail_w, measure, cw));
-			if (end == std::string::npos)
-				break;
-			begin = end + 1;
-			if (context.size() > 8)
-				break; // предохранитель: полоса не должна закрыть весь текст
-		}
-	}
+	if (!in.context.empty())
+		context.push_back(in.context);
 
+	const float rows_h = two_columns ? 3.0F : static_cast<float>(single.size()) * 1.0F;
 	const float button_h = lh + 2.0F * gap;
 	float h = pad;
+	h += static_cast<float>(context.size()) * lh;
+	h += gap;
 	if (!title.empty())
 		h += lh + gap;
-	h += static_cast<float>(context.size()) * lh;
-	if (!context.empty())
-		h += gap;
-	h += static_cast<float>(rows) * (button_h + gap) + pad - gap;
+	h += rows_h * (button_h + gap);
+	h += button_h + gap; // «Прервать» во всю ширину
+	h += pad - gap;
 
 	// Если полоса не помещается в окно, честнее нарисовать компактную
 	// плавающую панель: её App покажет по центру.
@@ -171,16 +165,6 @@ AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measur
 	out.y = std::max(0.0F, client_h - in.status_h - h);
 
 	float y = out.y + pad;
-	if (!title.empty())
-	{
-		AskLayout::Row row;
-		row.text = title;
-		row.y = y;
-		row.h = lh;
-		row.kind = AskRowKind::title;
-		out.rows.push_back(std::move(row));
-		y += lh + gap;
-	}
 	for (const std::string& text : context)
 	{
 		AskLayout::Row row;
@@ -191,14 +175,23 @@ AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measur
 		out.rows.push_back(std::move(row));
 		y += lh;
 	}
-	if (!context.empty())
-		y += gap;
+	y += gap;
+	if (!title.empty())
+	{
+		AskLayout::Row row;
+		row.text = title;
+		row.y = y;
+		row.h = lh;
+		row.kind = AskRowKind::title;
+		out.rows.push_back(std::move(row));
+		y += lh + gap;
+	}
 
-	const auto add_button = [&](const Entry& e, float x, float y0, float w)
+	const auto add_button = [&](AskChoice choice, const std::string& label, float x, float y0, float w)
 	{
 		AskButtonBox box;
-		box.choice = e.choice;
-		box.label = e.label;
+		box.choice = choice;
+		box.label = label;
 		box.x = x;
 		box.y = y0;
 		box.w = w;
@@ -208,31 +201,23 @@ AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measur
 
 	if (two_columns)
 	{
-		const float total = col0_w + 2.0F * gap + col1_w;
+		const float total = col_w + 2.0F * gap + col_w2;
 		const float x0 = std::max(pad, (client_w - total) * 0.5F);
-		const float x1 = x0 + col0_w + 2.0F * gap;
-		float yl = y;
-		for (const Entry& e : left)
-		{
-			add_button(e, x0, yl, col0_w);
-			yl += button_h + gap;
-		}
-		float yr = y;
-		for (const Entry& e : right)
-		{
-			add_button(e, x1, yr, col1_w);
-			yr += button_h + gap;
-		}
+		const float x1 = x0 + col_w + 2.0F * gap;
+		for (std::size_t k = 0; k < left.size(); ++k)
+			add_button(left[k].choice, left[k].label, x0, y + static_cast<float>(k) * (button_h + gap), col_w);
+		for (std::size_t k = 0; k < right.size(); ++k)
+			add_button(right[k].choice, right[k].label, x1, y + static_cast<float>(k) * (button_h + gap), col_w2);
+
+		// «Прервать» — по ширине двух верхних кнопок.
+		const float cancel_y = y + static_cast<float>(left.size()) * (button_h + gap);
+		add_button(cancel_entry.choice, cancel_entry.label, x0, cancel_y, total);
 	}
 	else
 	{
-		const float x0 = std::max(pad, (client_w - col0_w) * 0.5F);
-		float y1 = y;
-		for (const Entry& e : single)
-		{
-			add_button(e, x0, y1, col0_w);
-			y1 += button_h + gap;
-		}
+		const float x0 = std::max(pad, (client_w - col_w) * 0.5F);
+		for (std::size_t k = 0; k < single.size(); ++k)
+			add_button(single[k].choice, single[k].label, x0, y + static_cast<float>(k) * (button_h + gap), col_w);
 	}
 	return out;
 }

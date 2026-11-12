@@ -34,8 +34,9 @@ struct YofyResult
 	std::size_t replaced = 0;	// сколько символов е<->ё заменено
 	std::size_t lines = 0;		// сколько строк обработано
 	std::size_t asked = 0;		// сколько раз движок спрашивал
+	std::size_t reverted = 0;	// сколько замен снято «Откатом»
 	bool cancelled = false;		// обработка прервана пользователем
-	bool rolled_back = false;	// пользователь выбрал «Откат»: изменений нет
+	bool rolled_back = false;	// (устарело) проход отменён целиком
 	bool changed = false;		// текст документа изменился
 };
 
@@ -50,7 +51,8 @@ using YofyCancelFn = std::function<bool()>;
 
 // Ёфицировать строки, пересекающие [from, to), одной группой undo.
 // Ответы на вопросы движка задаются через Yoficator::set_ask у вызывающего.
-// Если пользователь выбрал «Откат», документ не меняется вовсе.
+// «Откат» снимает последнюю сделанную замену прохода (один шаг), а не весь
+// проход: остальные ответы пользователя сохраняются.
 YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
 						const YofyLineFn& on_line = {}, const YofyCancelFn& cancel = {});
 

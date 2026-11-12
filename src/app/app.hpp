@@ -220,6 +220,23 @@ private:
 	std::string find_query_;
 	char32_t pending_high_ = 0;
 	int wheel_accum_ = 0; // остаток дельты колеса (тачпады шлют меньше 120)
+	// --- настройки (yo.ini рядом с exe, как у оригинала) ---
+	// Ключи названы как в оригинале ([Yo] AlwaysAsk, Mark, FontSize, ...),
+	// поэтому подходит и yo.ini от старого ёфикатора.
+	bool mark_ = true;
+	bool propose_last_ = true;
+	bool regexs_ = true;
+	bool to_confirm_abbr_ = true;
+	std::wstring dict_setting_;	 // [Yo] Dictionary (пусто — искать рядом с exe)
+	std::wstring regex_setting_; // [Yo] RegExprDictionary
+	std::filesystem::path ini_path_;
+	RECT saved_rect_{};
+	bool has_saved_rect_ = false;
+	bool saved_maximized_ = false;
+	void load_settings();
+	void save_settings();
+	[[nodiscard]] std::filesystem::path settings_path() const;
+
 	bool always_ask_ = false; // «спрашивать про все слова» (Yo/AlwaysAsk)
 	bool silent_yofy_ = false; // «без вопросов»
 	// Слова, про которые уже ответили «пропустить» в текущем проходе: повторно

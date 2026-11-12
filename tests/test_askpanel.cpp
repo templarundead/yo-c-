@@ -243,21 +243,42 @@ TEST_CASE("панель вопросов: полоса снизу, кнопки 
 	CHECK(layout.w == in.client_w);
 	CHECK(layout.y + layout.h == in.client_h - in.status_h);
 
-	// Заголовок — первая строка, акцентом (kind == title).
+	// Сначала предложение с обрабатываемым словом, под ним — заголовок,
+	// под заголовком — кнопки (как просил пользователь).
 	REQUIRE(!layout.rows.empty());
-	CHECK(layout.rows.front().text == in.reason);
-	CHECK(layout.rows.front().kind == AskRowKind::title);
-	// Предложение с обрабатываемым словом тоже на панели.
-	bool has_context = false;
-	for (const AskLayout::Row& row : layout.rows)
+	std::size_t context_row = layout.rows.size();
+	std::size_t title_row = layout.rows.size();
+	for (std::size_t i = 0; i < layout.rows.size(); ++i)
 	{
-		if (row.text.find("передохнем") != std::string::npos)
-			has_context = true;
+		if (layout.rows[i].text.find("передохнем") != std::string::npos)
+			context_row = i;
+		if (layout.rows[i].kind == AskRowKind::title)
+			title_row = i;
 	}
-	CHECK(has_context);
+	REQUIRE(context_row < layout.rows.size());
+	REQUIRE(title_row < layout.rows.size());
+	CHECK(layout.rows[title_row].text == in.reason);
+	CHECK(context_row < title_row);
+	// Контекст — одной строкой (без переносов), слово видно целиком.
+	CHECK(context_row + 1 == title_row);
 
-	// Семь кнопок, две колонки по x.
+	// Семь кнопок: две колонки по три и «Прервать» во всю ширину.
 	REQUIRE(layout.buttons.size() == 7);
+	const AskButtonBox* cancel_box = nullptr;
+	for (const AskButtonBox& b : layout.buttons)
+		if (b.choice == AskChoice::cancel)
+			cancel_box = &b;
+	REQUIRE(cancel_box != nullptr);
+	float left_x = layout.buttons.front().x;
+	for (const AskButtonBox& b : layout.buttons)
+		left_x = std::min(left_x, b.x);
+	CHECK(cancel_box->x == left_x);
+	// Ширина «Прервать» — как у двух колонок вместе.
+	float two_cols = 0.0F;
+	for (const AskButtonBox& b : layout.buttons)
+		if (b.choice != AskChoice::cancel)
+			two_cols = std::max(two_cols, b.x + b.w - left_x);
+	CHECK(cancel_box->w >= two_cols - 1.0F);
 	std::vector<float> xs;
 	for (const AskButtonBox& b : layout.buttons)
 	{
