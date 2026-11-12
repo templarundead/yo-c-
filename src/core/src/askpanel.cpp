@@ -127,7 +127,27 @@ AskLayout layout_ask_panel(const AskLayoutInput& in, const AskMeasureFn& measure
 		return cut + "…";
 	};
 
-	std::vector<std::string> texts = { clip(in.variants), clip(in.reason), clip(in.context) };
+	// Контекст — предложение с обрабатываемым словом; он может занимать
+	// несколько строк (App переносит его по ширине панели).
+	std::vector<std::string> texts = { clip(in.variants), clip(in.reason) };
+	{
+		std::size_t begin = 0;
+		const std::string& ctx = in.context;
+		while (begin <= ctx.size())
+		{
+			const std::size_t end = ctx.find('\n', begin);
+			const std::string part =
+				end == std::string::npos ? ctx.substr(begin) : ctx.substr(begin, end - begin);
+			texts.push_back(clip(part));
+			if (end == std::string::npos)
+				break;
+			begin = end + 1;
+			if (texts.size() > 24)
+				break; // предохранитель: панель не должна занимать весь экран
+		}
+	}
+	if (in.context.empty())
+		texts.pop_back();
 
 	struct Entry
 	{
@@ -145,7 +165,7 @@ AskLayout layout_ask_panel(const AskLayoutInput& in, const AskMeasureFn& measure
 		{ AskChoice::cancel, "Esc  Прервать", 0.0F },
 	};
 	for (Entry& e : entries)
-		e.width = std::max(7.0F * cw, width(e.label) + 2.0F * gap);
+		e.width = std::max(9.0F * cw, width(e.label) + 3.0F * gap);
 
 	// Кнопки в один ряд, а если не влезают — в несколько.
 	std::vector<std::vector<std::size_t>> lines;
@@ -175,9 +195,9 @@ AskLayout layout_ask_panel(const AskLayoutInput& in, const AskMeasureFn& measure
 		inner_w = std::max(inner_w, width(text));
 
 	const float panel_w = std::min(client_w - 2.0F * pad, inner_w + 2.0F * pad);
-	const float button_h = lh + 2.0F * gap;
-	const float panel_h =
-		pad + 3.0F * lh + gap + static_cast<float>(lines.size()) * (button_h + gap) + pad;
+	const float button_h = lh + 3.0F * gap;
+	const float panel_h = pad + static_cast<float>(texts.size()) * lh + gap +
+						  static_cast<float>(lines.size()) * (button_h + gap) + pad;
 
 	// Панель прижата к низу окна над строкой состояния.
 	const float bottom = std::max(client_h - in.status_h - pad, panel_h + pad);

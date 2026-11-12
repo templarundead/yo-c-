@@ -193,3 +193,33 @@ TEST_CASE("панель вопросов: невысокое окно — пан
 	CHECK(layout.y >= 0.0F);
 	CHECK(layout.h > 0.0F);
 }
+
+TEST_CASE("панель вопросов: контекст из нескольких строк", "[askpanel]")
+{
+	// В панели — всё предложение: оно переносится по ширине и занимает
+	// несколько строк, панель обязана вырасти, а не обрезать его.
+	AskLayoutInput in = base_input();
+	in.context = "и вот мы все еще не пришли\nдомой, а дождь всё идёт";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.rows.size() >= 4); // варианты, причина и две строки контекста
+	std::size_t context_rows = 0;
+	for (const AskLayout::Row& row : layout.rows)
+	{
+		if (row.text.find("домой") != std::string::npos || row.text.find("не пришли") != std::string::npos)
+			++context_rows;
+	}
+	CHECK(context_rows >= 2);
+}
+
+TEST_CASE("панель вопросов: кнопки достаточно крупные для мыши", "[askpanel]")
+{
+	AskLayoutInput in = base_input();
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(!layout.buttons.empty());
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		CHECK(b.h >= in.line_height + 2.0F * 3.0F); // строка текста + отступы
+		CHECK(b.w > in.char_width * 4.0F);
+	}
+}

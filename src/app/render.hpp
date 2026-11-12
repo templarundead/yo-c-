@@ -34,6 +34,11 @@ struct AskRow
 	D2D1_RECT_F rect{};
 	std::wstring text;
 	AskKind kind = AskKind::normal;
+	// Участок строки с обрабатываемым словом — рисуем его красным, как
+	// в AskPanel оригинала (видно, о каком слове вопрос).
+	bool has_hot = false;
+	std::size_t hot_from = 0;
+	std::size_t hot_to = 0;
 };
 
 struct AskButtonView
@@ -41,6 +46,7 @@ struct AskButtonView
 	D2D1_RECT_F rect{};
 	std::wstring label;
 	bool focus = false;
+	bool hot = false;  // наведена мышь — видно, что кнопка нажимается
 };
 
 struct AskView
@@ -48,6 +54,34 @@ struct AskView
 	D2D1_RECT_F panel{};
 	std::vector<AskRow> rows;
 	std::vector<AskButtonView> buttons;
+	// Обрабатываемое слово в документе (смещения в байтах): подсвечиваем его,
+	// как это делает AskPanel оригинала, чтобы было видно, о чём вопрос.
+	bool has_word = false;
+	std::size_t word_from = 0;
+	std::size_t word_to = 0;
+};
+
+// Верхняя строка меню рисуется нами: системное меню на тёмной теме остаётся
+// белым (в Windows нет API для его перекраски).
+struct MenuItemView
+{
+	D2D1_RECT_F rect{};
+	std::wstring label;
+	bool separator = false;
+	bool checked = false;
+	bool enabled = true;
+	bool hot = false;
+};
+
+struct MenuBarView
+{
+	std::vector<std::wstring> titles;
+	std::vector<D2D1_RECT_F> title_rects;
+	int active = -1;	  // индекс открытого меню (-1 — закрыто)
+	int hot_title = -1;	  // подсвеченный заголовок (мышь/клавиатура)
+	bool dropdown = false;
+	D2D1_RECT_F panel{};
+	std::vector<MenuItemView> items;
 };
 
 struct Theme
@@ -95,10 +129,16 @@ public:
 	// `ask` — панель вопросов ёфикации поверх текста.
 	void paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 			   const std::wstring& find_text, bool find_focus, bool caret,
-			   const AskView* ask = nullptr);
+			   const AskView* ask = nullptr, const MenuBarView* bar = nullptr);
 
 	[[nodiscard]] float text_area_width() const noexcept;
 	[[nodiscard]] float text_area_height() const noexcept;
+
+	// Всё рисование идёт в DIP (независимых от DPI пикселях), а сообщения
+	// мыши приходят в физических пикселях — App переводит их этим множителем.
+	[[nodiscard]] float dpi_scale() const noexcept { return dpi_scale_; }
+	// Высота нашей строки меню в DIP: она внутри клиентской области.
+	[[nodiscard]] float bar_height() const noexcept { return bar_h_; }
 
 private:
 	bool ensure_resources(HWND hwnd);
@@ -107,6 +147,9 @@ private:
 	void draw_status(const std::wstring& status);
 	void draw_find_bar(const std::wstring& text, bool focus);
 	void draw_ask(const AskView& view);
+	void draw_menu_bar(const MenuBarView& bar);
+	void draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, float text_h,
+							 std::size_t from, std::size_t to);
 
 	HWND hwnd_ = nullptr;
 	ID2D1Factory* factory_ = nullptr;
@@ -122,11 +165,14 @@ private:
 	float font_size_ = 15.0F;
 	float char_w_ = 8.0F;
 	float line_h_ = 18.0F;
-	float status_h_ = 22.0F;
+	float status_h_ = 20.0F;
 	float find_h_ = 26.0F;
 	float padding_ = 6.0F;
+	float bar_h_ = 26.0F;
 	UINT width_px_ = 0;
 	UINT height_px_ = 0;
+	float width_dip_ = 0.0F;  // клиентская область в DIP (см. dpi_scale)
+	float height_dip_ = 0.0F;
 
 	struct CachedLine
 	{

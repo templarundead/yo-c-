@@ -351,6 +351,9 @@ UString Yoficator::select_word(const UString& cword, [[maybe_unused]] std::size_
 			(focus_n != 0 && opts_.propose_last && !wrong_yo) ? (focus_n == 1)
 															  : (!cyr::is_yo_in(cword) || wrong_yo);
 		req.propose_last = opts_.propose_last;
+		req.line = line_no_;
+		req.offset = offset;
+		req.length = cword.size();
 
 		++stats_.ask_prompts;
 		AskAnswer answer = ask_ ? ask_(req) : AskAnswer::cancel;

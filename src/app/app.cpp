@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <string_view>
 #include <vector>
 
@@ -168,6 +169,120 @@ bool is_word_break(unsigned char c)
 	return false; // байт многобайтового символа
 }
 
+// Есть ли в строке предложение целиком (терминатор в конце) — нужно, чтобы
+// понять, где заканчивается фраза вокруг слова.
+bool ends_sentence(std::string_view text)
+{
+	for (std::size_t i = text.size(); i > 0; --i)
+	{
+		const char c = text[i - 1];
+		if (c == ' ' || c == '\t' || c == '\r')
+			continue;
+		if ((c & 0xC0) == 0x80U)
+			continue; // продолжение многобайтового символа
+		if (c == '.' || c == '!' || c == '?')
+			return true;
+		// многоточие «…» (U+2026) — три байта E2 80 A6
+		if (i >= 3 && text[i - 3] == '\xE2' && text[i - 2] == '\x80' && text[i - 1] == '\xA6')
+			return true;
+		return false;
+	}
+	return false;
+}
+
+std::string trimmed_line(const TextBuffer& buf, std::size_t line)
+{
+	if (line >= buf.line_count())
+		return {};
+	std::string_view text = buf.line_text(line);
+	std::size_t begin = 0;
+	while (begin < text.size() && (text[begin] == '\t' || text[begin] == ' '))
+		++begin;
+	std::size_t end = text.size();
+	while (end > begin && (text[end - 1] == '\r' || text[end - 1] == '\n' || text[end - 1] == ' ' ||
+						   text[end - 1] == '\t'))
+		--end;
+	return std::string(text.substr(begin, end - begin));
+}
+
+// Предложение с обрабатываемым словом: соседние строки, пока фраза не
+// закончилась, но не больше четырёх строк и ~800 символов (как в AskPanel
+// оригинала, где видно контекст слова).
+std::string sentence_around(const TextBuffer& buf, std::size_t line)
+{
+	constexpr std::size_t kMaxLines = 4;
+	constexpr std::size_t kMaxBytes = 800;
+
+	std::size_t first = line;
+	std::size_t last = line;
+	std::size_t total = trimmed_line(buf, line).size();
+
+	while (first > 0 && last - first + 1 < kMaxLines && total < kMaxBytes)
+	{
+		const std::string prev = trimmed_line(buf, first - 1);
+		if (prev.empty())
+			break; // пустая строка — граница абзаца
+		if (ends_sentence(prev))
+			break; // предыдущая строка закончила фразу — фраза начинается здесь
+		total += prev.size() + 1;
+		--first;
+	}
+	while (last + 1 < buf.line_count() && last - first + 1 < kMaxLines && total < kMaxBytes)
+	{
+		const std::string next = trimmed_line(buf, last + 1);
+		if (next.empty())
+			break;
+		total += next.size() + 1;
+		++last;
+		if (ends_sentence(next))
+			break;
+	}
+
+	std::string text;
+	for (std::size_t i = first; i <= last; ++i)
+	{
+		const std::string part = trimmed_line(buf, i);
+		if (part.empty())
+			continue;
+		if (!text.empty())
+			text += ' ';
+		text += part;
+	}
+	return text;
+}
+
+// Перенос текста по ширине панели: панель узкая, а предложение длинное.
+std::string wrap_text(const std::string& text, float max_width, const std::function<float(const std::string&)>& measure)
+{
+	std::string out;
+	std::string current;
+	std::size_t begin = 0;
+	while (begin < text.size())
+	{
+		std::size_t end = text.find(' ', begin);
+		if (end == std::string::npos)
+			end = text.size();
+		const std::string word = text.substr(begin, end - begin);
+		begin = end + 1;
+		if (word.empty())
+			continue;
+		const std::string probe = current.empty() ? word : current + " " + word;
+		if (!current.empty() && measure(probe) > max_width)
+		{
+			out += current;
+			out += '\n';
+			current = word;
+		}
+		else
+		{
+			current = probe;
+		}
+	}
+	if (!current.empty())
+		out += current;
+	return out;
+}
+
 // Тёмное оформление системных элементов окна.
 //
 // Полосы прокрутки, рамка и заголовок рисуются системой, поэтому цветом
@@ -313,7 +428,7 @@ void App::on_create()
 	renderer_.set_dpi(dpi_scale_);
 	sync_metrics();
 
-	setup_menu();
+	build_menus();
 	setup_accels();
 
 	RECT rc{};
@@ -326,64 +441,303 @@ void App::on_create()
 	SetTimer(hwnd_, kCaretTimer, (blink == 0 || blink == INFINITE) ? 530U : blink, nullptr);
 }
 
-void App::setup_menu()
+void App::build_menus()
 {
-	const HMENU bar = CreateMenu();
+	// Заголовки и пункты хранятся данными: рисуем их сами, потому что системная
+	// строка меню на тёмной теме остаётся белой и выглядит чужеродно.
+	menus_.clear();
 
-	const HMENU file = CreatePopupMenu();
-	AppendMenuW(file, MF_STRING, kCmdNew, L"&Создать\tCtrl+N");
-	AppendMenuW(file, MF_STRING, kCmdOpen, L"&Открыть…\tCtrl+O");
-	AppendMenuW(file, MF_STRING, kCmdReload, L"Пере&читать с диска\tCtrl+R");
-	AppendMenuW(file, MF_STRING, kCmdSave, L"&Сохранить\tCtrl+S");
-	AppendMenuW(file, MF_STRING, kCmdSaveAs, L"Сохранить &как…\tCtrl+Shift+S");
-	AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-	AppendMenuW(file, MF_STRING, kCmdExit, L"В&ыход\tAlt+F4");
-	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&Файл");
+	MenuDef file;
+	file.title = L"Файл";
+	file.entries = {
+		{ L"Создать\tCtrl+N", kCmdNew },
+		{ L"Открыть…\tCtrl+O", kCmdOpen },
+		{ L"Перечитать с диска\tCtrl+R", kCmdReload },
+		{ L"", 0, true },
+		{ L"Сохранить\tCtrl+S", kCmdSave },
+		{ L"Сохранить как…\tCtrl+Shift+S", kCmdSaveAs },
+		{ L"", 0, true },
+		{ L"Выход\tAlt+F4", kCmdExit },
+	};
+	menus_.push_back(std::move(file));
 
-	const HMENU edit = CreatePopupMenu();
-	AppendMenuW(edit, MF_STRING, kCmdUndo, L"&Отменить\tCtrl+Z");
-	AppendMenuW(edit, MF_STRING, kCmdRedo, L"Пов&торить\tCtrl+Y");
-	AppendMenuW(edit, MF_SEPARATOR, 0, nullptr);
-	AppendMenuW(edit, MF_STRING, kCmdCut, L"&Вырезать\tCtrl+X");
-	AppendMenuW(edit, MF_STRING, kCmdCopy, L"&Копировать\tCtrl+C");
-	AppendMenuW(edit, MF_STRING, kCmdPaste, L"В&ставить\tCtrl+V");
-	AppendMenuW(edit, MF_SEPARATOR, 0, nullptr);
-	AppendMenuW(edit, MF_STRING, kCmdSelectAll, L"Выделить &всё\tCtrl+A");
-	AppendMenuW(edit, MF_SEPARATOR, 0, nullptr);
-	AppendMenuW(edit, MF_STRING, kCmdFind, L"&Найти…\tCtrl+F");
-	AppendMenuW(edit, MF_STRING, kCmdFindNext, L"Найти &далее\tF3");
-	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(edit), L"&Правка");
+	MenuDef edit;
+	edit.title = L"Правка";
+	edit.entries = {
+		{ L"Отменить\tCtrl+Z", kCmdUndo },
+		{ L"Повторить\tCtrl+Y", kCmdRedo },
+		{ L"", 0, true },
+		{ L"Вырезать\tCtrl+X", kCmdCut },
+		{ L"Копировать\tCtrl+C", kCmdCopy },
+		{ L"Вставить\tCtrl+V", kCmdPaste },
+		{ L"", 0, true },
+		{ L"Выделить всё\tCtrl+A", kCmdSelectAll },
+		{ L"", 0, true },
+		{ L"Найти…\tCtrl+F", kCmdFind },
+		{ L"Найти далее\tF3", kCmdFindNext },
+	};
+	menus_.push_back(std::move(edit));
 
-	const HMENU yofy = CreatePopupMenu();
-	AppendMenuW(yofy, MF_STRING, kCmdYofify, L"&Ёфицировать\tCtrl+E");
-	AppendMenuW(yofy, MF_SEPARATOR, 0, nullptr);
-	AppendMenuW(yofy, MF_STRING, kCmdAskWord, L"Спросить про слово под &курсором\tCtrl+Shift+E");
-	AppendMenuW(yofy, MF_STRING, kCmdSilentYofy, L"&Без вопросов (неоднозначные пропускать)");
-	AppendMenuW(yofy, MF_STRING, kCmdAlwaysAsk, L"Спрашивать про &все слова");
-	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(yofy), L"&Ёфикация");
+	MenuDef yofy;
+	yofy.title = L"Ёфикация";
+	yofy.entries = {
+		{ L"Ёфицировать\tCtrl+E", kCmdYofify },
+		{ L"Спросить про слово под курсором\tCtrl+Shift+E", kCmdAskWord },
+		{ L"Без вопросов", kCmdSilentYofy },
+		{ L"", 0, true },
+		{ L"Спрашивать про все слова", kCmdAlwaysAsk },
+	};
+	menus_.push_back(std::move(yofy));
 
-	const HMENU enc = CreatePopupMenu();
-	AppendMenuW(enc, MF_STRING, kCmdEncCp1251, L"CP1251 (Windows)");
-	AppendMenuW(enc, MF_STRING, kCmdEncUtf8, L"UTF-8");
-	AppendMenuW(enc, MF_STRING, kCmdEncUtf8Bom, L"UTF-8 с BOM");
-	AppendMenuW(enc, MF_STRING, kCmdEncUtf16le, L"UTF-16LE");
-	AppendMenuW(enc, MF_STRING, kCmdEncUtf16be, L"UTF-16BE");
-	enc_menu_ = enc;
-	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"&Кодировка");
+	MenuDef enc;
+	enc.title = L"Кодировка";
+	enc.entries = {
+		{ L"CP1251 (Windows)", kCmdEncCp1251 },
+		{ L"UTF-8", kCmdEncUtf8 },
+		{ L"UTF-8 с BOM", kCmdEncUtf8Bom },
+		{ L"UTF-16LE", kCmdEncUtf16le },
+		{ L"UTF-16BE", kCmdEncUtf16be },
+	};
+	menus_.push_back(std::move(enc));
 
-	const HMENU eol = CreatePopupMenu();
-	AppendMenuW(eol, MF_STRING, kCmdEolLf, L"LF (Unix)");
-	AppendMenuW(eol, MF_STRING, kCmdEolCrlf, L"CRLF (Windows)");
-	AppendMenuW(eol, MF_STRING, kCmdEolCr, L"CR (Mac)");
-	eol_menu_ = eol;
-	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(eol), L"Пере&вод строк");
+	MenuDef eol;
+	eol.title = L"Перевод строк";
+	eol.entries = {
+		{ L"LF (Unix)", kCmdEolLf },
+		{ L"CRLF (Windows)", kCmdEolCrlf },
+		{ L"CR (Mac)", kCmdEolCr },
+	};
+	menus_.push_back(std::move(eol));
 
-	const HMENU view = CreatePopupMenu();
-	AppendMenuW(view, MF_STRING, kCmdFontBigger, L"&Крупнее\tCtrl++");
-	AppendMenuW(view, MF_STRING, kCmdFontSmaller, L"&Мельче\tCtrl+-");
-	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&Вид");
+	MenuDef view;
+	view.title = L"Вид";
+	view.entries = {
+		{ L"Крупнее\tCtrl++", kCmdFontBigger },
+		{ L"Мельче\tCtrl+-", kCmdFontSmaller },
+	};
+	menus_.push_back(std::move(view));
 
-	SetMenu(hwnd_, bar);
+	layout_menus();
+}
+
+void App::layout_menus()
+{
+	menu_title_rects_.assign(menus_.size(), D2D1_RECT_F{});
+	float x = 4.0F;
+	const float h = renderer_.bar_height();
+	for (std::size_t i = 0; i < menus_.size(); ++i)
+	{
+		const float w = renderer_.measure_ui(menus_[i].title) + 20.0F;
+		menu_title_rects_[i] = D2D1::RectF(x, 0.0F, x + w, h);
+		x += w;
+	}
+	// Габариты пунктов открытого меню.
+	menu_item_rects_.clear();
+	if (open_menu_ >= 0 && static_cast<std::size_t>(open_menu_) < menus_.size())
+	{
+		const MenuDef& def = menus_[static_cast<std::size_t>(open_menu_)];
+		const float row_h = std::max(20.0F, renderer_.line_height());
+		float width = 0.0F;
+		for (const MenuEntry& e : def.entries)
+			width = std::max(width, renderer_.measure_ui(e.label) + 28.0F);
+		const D2D1_RECT_F& title = menu_title_rects_[static_cast<std::size_t>(open_menu_)];
+		const float top = h;
+		float y = top + 4.0F;
+		menu_item_rects_.clear();
+		for (std::size_t i = 0; i < def.entries.size(); ++i)
+		{
+			menu_item_rects_.push_back(D2D1::RectF(title.left, y, title.left + width, y + row_h));
+			y += row_h;
+		}
+		menu_panel_ = D2D1::RectF(title.left, top, title.left + width, y + 4.0F);
+	}
+}
+
+MenuBarView App::menu_bar_view()
+{
+	MenuBarView view;
+	for (const MenuDef& m : menus_)
+		view.titles.push_back(m.title);
+	view.title_rects = menu_title_rects_;
+	view.active = open_menu_;
+	view.hot_title = hot_title_;
+	if (open_menu_ < 0 || static_cast<std::size_t>(open_menu_) >= menus_.size())
+		return view;
+
+	const MenuDef& def = menus_[static_cast<std::size_t>(open_menu_)];
+	view.dropdown = true;
+	view.panel = menu_panel_;
+	for (std::size_t i = 0; i < def.entries.size() && i < menu_item_rects_.size(); ++i)
+	{
+		const MenuEntry& e = def.entries[i];
+		MenuItemView item;
+		item.rect = menu_item_rects_[i];
+		item.separator = e.separator;
+		item.checked = e.checked;
+		item.enabled = e.enabled;
+		item.hot = static_cast<int>(i) == hot_item_;
+		item.label = e.label;
+		view.items.push_back(std::move(item));
+	}
+	return view;
+}
+
+void App::menu_close()
+{
+	open_menu_ = -1;
+	hot_item_ = -1;
+	invalidate();
+}
+
+bool App::menu_mouse_move(float x, float y)
+{
+	if (open_menu_ >= 0)
+	{
+		// Наведение на другой заголовок переключает меню (как в обычных меню).
+		for (std::size_t i = 0; i < menu_title_rects_.size(); ++i)
+		{
+			const D2D1_RECT_F& r = menu_title_rects_[i];
+			if (y >= r.top && y < r.bottom && x >= r.left && x < r.right)
+			{
+				if (static_cast<int>(i) != open_menu_)
+				{
+					open_menu_ = static_cast<int>(i);
+					hot_item_ = -1;
+					layout_menus();
+				}
+				hot_title_ = static_cast<int>(i);
+				invalidate();
+				return true;
+			}
+		}
+		for (std::size_t i = 0; i < menu_item_rects_.size(); ++i)
+		{
+			const D2D1_RECT_F& r = menu_item_rects_[i];
+			if (x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+			{
+				hot_item_ = static_cast<int>(i);
+				invalidate();
+				return true;
+			}
+		}
+		if (y >= 0.0F && y < renderer_.bar_height())
+			return true;
+	}
+	// Заголовки подсвечиваем и при закрытых меню — только когда мышь над ними.
+	int hot = -1;
+	for (std::size_t i = 0; i < menu_title_rects_.size(); ++i)
+	{
+		const D2D1_RECT_F& r = menu_title_rects_[i];
+		if (y >= r.top && y < r.bottom && x >= r.left && x < r.right)
+			hot = static_cast<int>(i);
+	}
+	if (hot != hot_title_)
+	{
+		hot_title_ = hot;
+		invalidate();
+	}
+	return hot >= 0 || (open_menu_ >= 0 && y < renderer_.bar_height());
+}
+
+bool App::menu_click(float x, float y)
+{
+	const float bar_h = renderer_.bar_height();
+	for (std::size_t i = 0; i < menu_title_rects_.size(); ++i)
+	{
+		const D2D1_RECT_F& r = menu_title_rects_[i];
+		if (y >= r.top && y < r.bottom && x >= r.left && x < r.right)
+		{
+			open_menu_ = (open_menu_ == static_cast<int>(i)) ? -1 : static_cast<int>(i);
+			hot_item_ = -1;
+			layout_menus();
+			invalidate();
+			return true;
+		}
+	}
+
+	if (open_menu_ < 0)
+		return y < bar_h; // клик по пустому месту строки меню
+
+	if (x >= menu_panel_.left && x < menu_panel_.right && y >= menu_panel_.top && y < menu_panel_.bottom)
+	{
+		const MenuDef& def = menus_[static_cast<std::size_t>(open_menu_)];
+		for (std::size_t i = 0; i < menu_item_rects_.size(); ++i)
+		{
+			const D2D1_RECT_F& r = menu_item_rects_[i];
+			if (x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+			{
+				const MenuEntry& e = def.entries[i];
+				menu_close();
+				if (!e.separator && e.enabled && e.cmd != 0)
+					on_command(e.cmd);
+				return true;
+			}
+		}
+		return true;
+	}
+
+	// Клик мимо — закрыть меню.
+	menu_close();
+	return true;
+}
+
+void App::menu_key(WPARAM vk)
+{
+	if (open_menu_ < 0)
+	{
+		if (vk == VK_F10)
+		{
+			open_menu_ = 0;
+			hot_item_ = 0;
+			layout_menus();
+			invalidate();
+		}
+		return;
+	}
+	const MenuDef& def = menus_[static_cast<std::size_t>(open_menu_)];
+	const auto count = static_cast<int>(def.entries.size());
+	switch (vk)
+	{
+	case VK_ESCAPE:
+		menu_close();
+		break;
+	case VK_LEFT:
+	case VK_RIGHT:
+	{
+		const auto n = static_cast<int>(menus_.size());
+		open_menu_ = (open_menu_ + (vk == VK_RIGHT ? 1 : n - 1)) % n;
+		hot_item_ = -1;
+		layout_menus();
+		invalidate();
+		break;
+	}
+	case VK_UP:
+	case VK_DOWN:
+	{
+		if (count == 0)
+			break;
+		int next = hot_item_;
+		do
+		{
+			next = (next + (vk == VK_DOWN ? 1 : count - 1) + count) % count;
+		} while (def.entries[static_cast<std::size_t>(next)].separator ||
+				 !def.entries[static_cast<std::size_t>(next)].enabled);
+		hot_item_ = next;
+		invalidate();
+		break;
+	}
+	case VK_RETURN:
+		if (hot_item_ >= 0 && hot_item_ < count)
+		{
+			const MenuEntry& e = def.entries[static_cast<std::size_t>(hot_item_)];
+			menu_close();
+			if (!e.separator && e.enabled && e.cmd != 0)
+				on_command(e.cmd);
+		}
+		break;
+	default:
+		break;
+	}
 }
 
 void App::setup_accels()
@@ -416,34 +770,64 @@ void App::setup_accels()
 
 void App::update_menu_checks()
 {
-	int enc_id = kCmdEncUtf8;
-	switch (enc_)
-	{
-	case Encoding::cp1251:
-		enc_id = kCmdEncCp1251;
-		break;
-	case Encoding::utf8:
-		enc_id = bom_ ? kCmdEncUtf8Bom : kCmdEncUtf8;
-		break;
-	case Encoding::utf16le:
-		enc_id = kCmdEncUtf16le;
-		break;
-	case Encoding::utf16be:
-		enc_id = kCmdEncUtf16be;
-		break;
-	}
-	int eol_id = kCmdEolLf;
-	if (eol_ == Eol::crlf)
-		eol_id = kCmdEolCrlf;
-	else if (eol_ == Eol::cr)
-		eol_id = kCmdEolCr;
+	const bool has_sel = ed_ != nullptr && ed_->has_selection();
+	const bool can_undo = buf_ != nullptr && buf_->can_undo();
+	const bool can_redo = buf_ != nullptr && buf_->can_redo();
 
-	if (enc_menu_ != nullptr)
-		CheckMenuRadioItem(enc_menu_, static_cast<UINT>(kCmdEncCp1251), static_cast<UINT>(kCmdEncUtf16be),
-						   static_cast<UINT>(enc_id), MF_BYCOMMAND);
-	if (eol_menu_ != nullptr)
-		CheckMenuRadioItem(eol_menu_, static_cast<UINT>(kCmdEolLf), static_cast<UINT>(kCmdEolCr),
-						   static_cast<UINT>(eol_id), MF_BYCOMMAND);
+	for (MenuDef& def : menus_)
+	{
+		for (MenuEntry& e : def.entries)
+		{
+			switch (e.cmd)
+			{
+			case kCmdUndo:
+				e.enabled = can_undo;
+				break;
+			case kCmdRedo:
+				e.enabled = can_redo;
+				break;
+			case kCmdCut:
+			case kCmdCopy:
+				e.enabled = has_sel;
+				break;
+			case kCmdPaste:
+				e.enabled = !readonly_;
+				break;
+			case kCmdEncCp1251:
+				e.checked = enc_ == Encoding::cp1251;
+				break;
+			case kCmdEncUtf8:
+				e.checked = enc_ == Encoding::utf8 && !bom_;
+				break;
+			case kCmdEncUtf8Bom:
+				e.checked = enc_ == Encoding::utf8 && bom_;
+				break;
+			case kCmdEncUtf16le:
+				e.checked = enc_ == Encoding::utf16le;
+				break;
+			case kCmdEncUtf16be:
+				e.checked = enc_ == Encoding::utf16be;
+				break;
+			case kCmdEolLf:
+				e.checked = eol_ == Eol::lf;
+				break;
+			case kCmdEolCrlf:
+				e.checked = eol_ == Eol::crlf;
+				break;
+			case kCmdEolCr:
+				e.checked = eol_ == Eol::cr;
+				break;
+			case kCmdAlwaysAsk:
+				e.checked = always_ask_;
+				break;
+			case kCmdSilentYofy:
+				e.checked = silent_yofy_;
+				break;
+			default:
+				break;
+			}
+		}
+	}
 }
 
 void App::sync_metrics()
@@ -471,6 +855,7 @@ void App::refresh_view()
 	update_scrollbars();
 	update_title();
 	update_menu_checks();
+	layout_menus();
 	invalidate();
 }
 
@@ -572,9 +957,10 @@ void App::on_paint()
 	renderer_.resize(static_cast<UINT>(std::max<LONG>(1, rc.right)), static_cast<UINT>(std::max<LONG>(1, rc.bottom)));
 	sync_metrics();
 	const AskView view = ask_view();
+	MenuBarView bar_view = menu_bar_view();
 	const auto paint_started = std::chrono::steady_clock::now();
 	renderer_.paint(*ed_, status_text(), show_find_, widen(find_query_), true, caret_on_,
-					ask_.active && ask_.has_panel ? &view : nullptr);
+					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view);
 	const double paint_ms =
 		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paint_started).count();
 	if (paint_ms > 16.0)
@@ -826,12 +1212,19 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 
 // ---------------------------------------------------------------- мышь
 
+std::size_t App::caret_offset_at(float x, float y) const
+{
+	// Текст начинается ниже строки меню: без этой поправки курсор вставал
+	// выше клика на bar_h_ (полторы строки при обычном шрифте).
+	return ed_->offset_at_client(x, y - renderer_.bar_height(), renderer_.padding());
+}
+
 void App::on_lbutton_down(float x, float y, bool extend)
 {
 	// Экран → документ живёт в ядре (offset_at_client): при прокрутке
 	// прокрутку нужно ПРИБАВЛЯТЬ, иначе курсор встаёт выше клика на
 	// 2*scroll_y/lh строк и выделение «съезжает» на несколько строк.
-	ed_->set_caret(ed_->offset_at_client(x, y, renderer_.padding()), extend);
+	ed_->set_caret(caret_offset_at(x, y), extend);
 	dragging_ = true;
 	SetCapture(hwnd_);
 	caret_on_ = true;
@@ -843,7 +1236,7 @@ void App::on_mouse_move(float x, float y)
 {
 	if (!dragging_)
 		return;
-	ed_->set_caret(ed_->offset_at_client(x, y, renderer_.padding()), true);
+	ed_->set_caret(caret_offset_at(x, y), true);
 	update_scrollbars();
 	invalidate();
 }
@@ -969,13 +1362,17 @@ void App::on_context_menu(int x, int y)
 	if (ask_.active)
 		return;
 
-	POINT pt{ x, y };
+	const float scale = std::max(1.0F, renderer_.dpi_scale());
+	POINT pt{ static_cast<LONG>(static_cast<float>(x) * scale), static_cast<LONG>(static_cast<float>(y) * scale) };
 	if (x == -1 && y == -1)
 	{
 		// Меню с клавиатуры (Shift+F10 / клавиша «меню»): ставим у курсора.
 		const CaretPos pos = ed_->caret_pos();
-		pt.x = static_cast<LONG>(renderer_.padding() + ed_->caret_x() - ed_->scroll_x());
-		pt.y = static_cast<LONG>(ed_->line_top(pos.line - 1) - ed_->scroll_y() + renderer_.line_height());
+		POINT client{};
+		client.x = static_cast<LONG>(renderer_.padding() + ed_->caret_x() - ed_->scroll_x());
+		client.y = static_cast<LONG>(renderer_.bar_height() + ed_->line_top(pos.line - 1) - ed_->scroll_y() +
+									 renderer_.line_height());
+		pt = client;
 		ClientToScreen(hwnd_, &pt);
 	}
 
@@ -1437,8 +1834,8 @@ bool App::pump_cancel()
 void App::set_always_ask(bool on)
 {
 	always_ask_ = on;
-	if (const HMENU menu = GetMenu(hwnd_))
-		CheckMenuItem(menu, static_cast<UINT>(kCmdAlwaysAsk), MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+	update_menu_checks();
+	invalidate();
 	if (yofy_)
 	{
 		Options opts = yofy_->options();
@@ -1450,8 +1847,8 @@ void App::set_always_ask(bool on)
 void App::set_silent_yofy(bool on)
 {
 	silent_yofy_ = on;
-	if (const HMENU menu = GetMenu(hwnd_))
-		CheckMenuItem(menu, static_cast<UINT>(kCmdSilentYofy), MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+	update_menu_checks();
+	invalidate();
 	if (yofy_)
 	{
 		if (on)
@@ -1493,18 +1890,38 @@ void App::ask_build_view()
 	in.variants = texts.variants;
 	in.reason = texts.reason;
 
-	std::string context = "стр. " + std::to_string(ask_.line + 1) + ": ";
-	if (ask_.line < buf_->line_count())
+	// Слово, о котором спрашивают: смещения в AskRequest — в единицах UTF-16
+	// внутри строки, а подсветке нужны байты всего текста.
+	const std::size_t ask_line = ask_.req.line;
+	ask_.has_word = false;
+	ask_.word_from = 0;
+	ask_.word_to = 0;
+	ask_.word_text.clear();
+	if (ask_line < buf_->line_count())
 	{
-		const std::string_view bytes = buf_->line_text(ask_.line);
-		std::size_t begin = 0;
-		while (begin < bytes.size() && bytes[begin] == '\t')
-			++begin;
-		std::size_t end = bytes.size();
-		while (end > begin && (bytes[end - 1] == '\r' || bytes[end - 1] == '\n'))
-			--end;
-		context += std::string(bytes.substr(begin, end - begin));
+		const std::string_view bytes = buf_->line_text(ask_.req.line);
+		const std::u16string u16 = utf8_to_utf16(bytes);
+		const std::size_t from16 = std::min(ask_.req.offset, u16.size());
+		const std::size_t to16 = std::min(ask_.req.offset + ask_.req.length, u16.size());
+		const std::size_t byte_from = utf16_to_utf8(std::u16string_view(u16).substr(0, from16)).size();
+		const std::string word8 = utf16_to_utf8(std::u16string_view(u16).substr(from16, to16 - from16));
+		const std::size_t byte_to = byte_from + word8.size();
+		if (byte_to > byte_from)
+		{
+			ask_.has_word = true;
+			ask_.word_from = buf_->line_start(ask_.req.line) + byte_from;
+			ask_.word_to = buf_->line_start(ask_.req.line) + byte_to;
+			ask_.word_text = widen(word8);
+		}
 	}
+
+	// В панели — всё предложение с этим словом: по одному слову невозможно
+	// понять, где Е, а где Ё.
+	const float max_context_w =
+		std::max(220.0F, std::min(std::max(220.0F, in.client_w - 96.0F), 640.0F));
+	std::string context = sentence_around(*buf_, ask_line);
+	context = wrap_text(context, max_context_w,
+		[this](const std::string& text) { return renderer_.measure_ui(widen(text)); });
 	in.context = std::move(context);
 
 	// Ширину строк меряет тот же шрифт, которым рисуем панель.
@@ -1528,6 +1945,17 @@ void App::ask_build_view()
 		row.text = widen(layout.rows[i].text);
 		row.kind = i == 0 ? AskKind::normal : (i == 1 ? AskKind::accent : AskKind::dim);
 		row.rect = D2D1::RectF(left, layout.rows[i].y + dy, right, layout.rows[i].y + dy + layout.rows[i].h);
+		// Слово внутри предложения выделяем и в панели — видно, о чём вопрос.
+		if (!ask_.word_text.empty())
+		{
+			const std::size_t at = row.text.find(ask_.word_text);
+			if (at != std::wstring::npos)
+			{
+				row.has_hot = true;
+				row.hot_from = at;
+				row.hot_to = at + ask_.word_text.size();
+			}
+		}
 		ask_.rows.push_back(std::move(row));
 	}
 
@@ -1558,6 +1986,9 @@ AskView App::ask_view() const
 	view.panel = D2D1::RectF(static_cast<float>(ask_.panel.left), static_cast<float>(ask_.panel.top),
 							static_cast<float>(ask_.panel.right), static_cast<float>(ask_.panel.bottom));
 	view.rows = ask_.rows;
+	view.has_word = ask_.has_word;
+	view.word_from = ask_.word_from;
+	view.word_to = ask_.word_to;
 	view.buttons.reserve(ask_.buttons.size());
 	for (const AskButton& b : ask_.buttons)
 	{
@@ -1565,7 +1996,9 @@ AskView App::ask_view() const
 		v.rect = D2D1::RectF(static_cast<float>(b.rect.left), static_cast<float>(b.rect.top),
 							static_cast<float>(b.rect.right), static_cast<float>(b.rect.bottom));
 		v.label = b.label;
-		v.focus = static_cast<std::ptrdiff_t>(&b - ask_.buttons.data()) == ask_.focus;
+		const auto index = static_cast<std::ptrdiff_t>(&b - ask_.buttons.data());
+		v.focus = index == ask_.focus;
+		v.hot = index == ask_.hot;
 		view.buttons.push_back(std::move(v));
 	}
 	return view;
@@ -1601,6 +2034,7 @@ AskAnswer App::ask_word(const AskRequest& req)
 	ask_.req = req;
 	ask_.answered = false;
 	ask_.answer = AskAnswer::cancel;
+	ask_.hot = -1;
 	ask_build_view();
 	{
 		const int ye = ask_.index_of(AskAnswer::ye);
@@ -1714,19 +2148,42 @@ void App::ask_char(wchar_t ch)
 	}
 }
 
+// Кнопка панели под точкой (координаты в DIP, как и её прямоугольники).
+int App::ask_button_at(float x, float y) const
+{
+	for (std::size_t i = 0; i < ask_.buttons.size(); ++i)
+	{
+		const RECT& r = ask_.buttons[i].rect;
+		if (x >= static_cast<float>(r.left) && x < static_cast<float>(r.right) && y >= static_cast<float>(r.top) &&
+			y < static_cast<float>(r.bottom))
+			return static_cast<int>(i);
+	}
+	return -1;
+}
+
+void App::ask_mouse_move(float x, float y)
+{
+	if (!ask_.active)
+		return;
+	const int hot = ask_button_at(x, y);
+	if (hot == ask_.hot)
+		return;
+	ask_.hot = hot;
+	if (hot >= 0)
+		ask_.focus = hot;  // Enter подтверждает ту кнопку, на которую смотрит мышь
+	SetCursor(LoadCursorW(nullptr, hot >= 0 ? IDC_HAND : IDC_ARROW));
+	invalidate();
+}
+
 void App::ask_click(float x, float y)
 {
 	if (!ask_.active)
 		return;
-	for (const AskButton& b : ask_.buttons)
-	{
-		if (x >= static_cast<float>(b.rect.left) && x < static_cast<float>(b.rect.right) &&
-			y >= static_cast<float>(b.rect.top) && y < static_cast<float>(b.rect.bottom))
-		{
-			ask_answer(b.answer);
-			return;
-		}
-	}
+	const int hit = ask_button_at(x, y);
+	if (hit < 0)
+		return;  // клик мимо кнопок не отвечает на вопрос
+	ask_.focus = hit;
+	ask_answer(ask_.buttons[static_cast<std::size_t>(hit)].answer);
 }
 
 // ---------------------------------------------------------------- файлы
@@ -2056,10 +2513,20 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			ask_key(wp, GetKeyState(VK_CONTROL) < 0);
 			return 0;
 		case WM_LBUTTONDOWN:
-			ask_click(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));
+		{
+			const float scale = std::max(1.0F, renderer_.dpi_scale());
+			ask_click(static_cast<float>(GET_X_LPARAM(lp)) / scale,
+				static_cast<float>(GET_Y_LPARAM(lp)) / scale);
 			return 0;
-		case WM_LBUTTONUP:
+		}
 		case WM_MOUSEMOVE:
+		{
+			const float scale = std::max(1.0F, renderer_.dpi_scale());
+			ask_mouse_move(static_cast<float>(GET_X_LPARAM(lp)) / scale,
+				static_cast<float>(GET_Y_LPARAM(lp)) / scale);
+			return 0;
+		}
+		case WM_LBUTTONUP:
 		case WM_LBUTTONDBLCLK:
 		case WM_MOUSEWHEEL:
 		case WM_CONTEXTMENU:
@@ -2127,13 +2594,24 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		on_char(static_cast<wchar_t>(wp));
 		return 0;
 	case WM_KEYDOWN:
+		if (open_menu_ >= 0 || wp == VK_F10)
+		{
+			menu_key(wp);
+			return 0;
+		}
 		on_key_down(wp, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0);
 		return 0;
 	case WM_LBUTTONDOWN:
 	{
+		// Сообщения мыши приходят в физических пикселях, рисуем мы в DIP.
+		const float scale = std::max(1.0F, renderer_.dpi_scale());
+		const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
+		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
 		const bool extend = GetKeyState(VK_SHIFT) < 0;
 		SetFocus(hwnd_);
-		on_lbutton_down(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)), extend);
+		if (menu_click(x, y))
+			return 0;
+		on_lbutton_down(x, y, extend);
 		return 0;
 	}
 	case WM_LBUTTONUP:
@@ -2143,9 +2621,12 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	{
 		// Правый клик вне выделения ставит курсор (как в любом редакторе):
 		// контекстное меню тогда относится к слову под мышью.
-		const float x = static_cast<float>(GET_X_LPARAM(lp));
-		const float y = static_cast<float>(GET_Y_LPARAM(lp));
-		const std::size_t hit = ed_->offset_at_client(x, y, renderer_.padding());
+		const float scale = std::max(1.0F, renderer_.dpi_scale());
+		const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
+		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
+		if (y < renderer_.bar_height())
+			return 0;
+		const std::size_t hit = caret_offset_at(x, y);
 		if (!ed_->has_selection() || hit < ed_->sel_begin() || hit > ed_->sel_end())
 		{
 			ed_->set_caret(hit);
@@ -2158,8 +2639,16 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		on_context_menu(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
 		return 0;
 	case WM_MOUSEMOVE:
-		on_mouse_move(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));
+	{
+		const float scale = std::max(1.0F, renderer_.dpi_scale());
+		const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
+		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
+		SetCursor(LoadCursorW(nullptr, y < renderer_.bar_height() ? IDC_ARROW : IDC_IBEAM));
+		if (menu_mouse_move(x, y))
+			return 0;
+		on_mouse_move(x, y);
 		return 0;
+	}
 	case WM_MOUSEWHEEL:
 		on_mouse_wheel(GET_WHEEL_DELTA_WPARAM(wp));
 		return 0;

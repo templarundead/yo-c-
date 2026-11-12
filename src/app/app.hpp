@@ -75,9 +75,32 @@ private:
 	bool write_document(const std::filesystem::path& path);
 	bool ask_save_changes();
 
-	void setup_menu();
+	// Своя строка меню: системное меню на тёмной теме остаётся белым.
+	struct MenuEntry
+	{
+		std::wstring label;
+		int cmd = 0;
+		bool separator = false;
+		bool checked = false;
+		bool enabled = true;
+	};
+
+	struct MenuDef
+	{
+		std::wstring title;
+		std::vector<MenuEntry> entries;
+	};
+
+	void build_menus();
 	void setup_accels();
 	void update_menu_checks();
+	void layout_menus();
+	[[nodiscard]] MenuBarView menu_bar_view();
+	// Возвращает true, если клик/движение обработаны строкой меню.
+	bool menu_mouse_move(float x, float y);
+	bool menu_click(float x, float y);
+	void menu_close();
+	void menu_key(WPARAM vk);
 	void update_title();
 	// redraw=false — вызов из WM_PAINT: не просим систему перерисовывать
 	// полосы повторно (иначе лишние проходы отрисовки при каждой прокрутке).
@@ -119,6 +142,13 @@ private:
 		bool has_panel = false;
 		std::vector<AskRow> rows;  // текст панели (геометрия уже посчитана)
 		std::vector<AskButton> buttons;
+		int hot = -1;  // кнопка под мышью (-1 — нет)
+		// Обрабатываемое слово — байтовые смещения в тексте документа:
+		// рендерер подсвечивает его, как AskPanel оригинала.
+		bool has_word = false;
+		std::size_t word_from = 0;
+		std::size_t word_to = 0;
+		std::wstring word_text;  // само слово — чтобы подсветить его в панели
 		int focus = 0;			   // кнопка под Enter
 
 		[[nodiscard]] int index_of(AskAnswer wanted) const
@@ -140,7 +170,11 @@ private:
 	void ask_key(WPARAM vk, bool ctrl);
 	void ask_char(wchar_t ch);
 	void ask_click(float x, float y);
+	void ask_mouse_move(float x, float y);
+	[[nodiscard]] int ask_button_at(float x, float y) const;
 	void scroll_line_into_view(std::size_t line);
+	// Экран (DIP) → смещение в документе: текст начинается ниже строки меню.
+	[[nodiscard]] std::size_t caret_offset_at(float x, float y) const;
 
 	void clipboard_copy(bool cut);
 	void clipboard_paste();
@@ -154,8 +188,13 @@ private:
 	HINSTANCE hinst_ = nullptr;
 	HWND hwnd_ = nullptr;
 	HACCEL accel_ = nullptr;
-	HMENU enc_menu_ = nullptr; // подменю «Кодировка» (отметка текущей)
-	HMENU eol_menu_ = nullptr; // подменю «Перевод строк»
+	std::vector<MenuDef> menus_;
+	std::vector<D2D1_RECT_F> menu_title_rects_;
+	int open_menu_ = -1;  // индекс открытого меню
+	int hot_item_ = -1;	  // подсвеченный пункт выпадающего списка
+	int hot_title_ = -1;  // подсвеченный заголовок
+	std::vector<D2D1_RECT_F> menu_item_rects_;
+	D2D1_RECT_F menu_panel_{};
 	std::shared_ptr<TextBuffer> buf_;
 	std::unique_ptr<Editor> ed_;
 	Renderer renderer_;

@@ -4,6 +4,7 @@
 #include "yo/cp1251.hpp"
 #include "yo/dict.hpp"
 #include "yo/regexdict.hpp"
+#include "yo/utf.hpp"
 #include "yo/yofy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -242,4 +243,22 @@ TEST_CASE("статистика: счётчики совпадают с ожид
 	CHECK(s.checked.a == s.checked.changed + s.checked.not_changed);
 	CHECK(s.asked.a == s.asked.changed + s.asked.not_changed);
 	CHECK(s.regex_resolved.a <= s.checked.a);
+}
+
+TEST_CASE("ёфикация: AskRequest знает, где слово в документе", "[yofy]")
+{
+	// GUI подсвечивает обрабатываемое слово и показывает предложение вокруг
+	// него — значит, запрос обязан сообщать строку и смещение слова.
+	H h;
+	const std::string text = "Заголовок без вопросов.\nИ вот мы все еще не пришли домой.";
+	h.run(text);
+	REQUIRE(!h.asks.empty());
+	const AskRequest& r = h.asks.front();
+	CHECK(r.line == 1);
+	CHECK(r.length == 3); // «все» — три единицы UTF-16
+
+	const std::string line = "И вот мы все еще не пришли домой.";
+	const std::u16string u16 = utf8_to_utf16(line);
+	REQUIRE(r.offset + r.length <= u16.size());
+	CHECK(utf16_to_utf8(std::u16string_view(u16).substr(r.offset, r.length)) == "все");
 }

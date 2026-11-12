@@ -92,6 +92,8 @@ void Renderer::set_dpi(float scale)
 	if (scale <= 0.0F)
 		return;
 	dpi_scale_ = scale;
+	width_dip_ = static_cast<float>(width_px_) / scale;
+	height_dip_ = static_cast<float>(height_px_) / scale;
 	// Шрифт задаётся в DIP, поэтому размеры пересчитываются.
 	if (hwnd_ != nullptr)
 	{
@@ -154,10 +156,13 @@ bool Renderer::measure_font(HWND hwnd)
 	char_w_ = std::max(1.0F, tm.widthIncludingTrailingWhitespace / 64.0F);
 	line_h_ = std::max(1.0F, std::ceil(tm.height));
 
-	// Отступы и полосы масштабируются вместе с DPI.
-	padding_ = 6.0F * dpi_scale_;
-	status_h_ = std::ceil(20.0F * dpi_scale_);
-	find_h_ = std::ceil(26.0F * dpi_scale_);
+	// Всё рисуется в DIP, а целевой буфер сам масштабирует DIP → пиксели
+	// (SetDpi). Умножать размеры на dpi_scale_ нельзя: полоса статуса уезжала
+	// за нижний край, а метрики строк не совпадали с координатами мыши.
+	padding_ = 6.0F;
+	status_h_ = 20.0F;
+	find_h_ = 26.0F;
+	bar_h_ = 26.0F;
 
 	if (hwnd_ == nullptr)
 		hwnd_ = hwnd;
@@ -240,6 +245,9 @@ void Renderer::resize(UINT width_px, UINT height_px)
 	const bool same = rt_ != nullptr && width_px == width_px_ && height_px == height_px_;
 	width_px_ = width_px;
 	height_px_ = height_px;
+	const float scale = dpi_scale_ > 0.0F ? dpi_scale_ : 1.0F;
+	width_dip_ = static_cast<float>(width_px) / scale;
+	height_dip_ = static_cast<float>(height_px) / scale;
 	if (same)
 		return; // размер не менялся: Resize не нужен
 	if (rt_ == nullptr && !create_render_target(hwnd_))
@@ -252,32 +260,32 @@ float Renderer::find_height() const noexcept { return find_h_; }
 
 float Renderer::text_area_width() const noexcept
 {
-	return std::max(0.0F, static_cast<float>(width_px_) - 2.0F * padding_);
+	return std::max(0.0F, width_dip_ - 2.0F * padding_);
 }
 
 float Renderer::text_area_height() const noexcept
 {
-	return std::max(0.0F, static_cast<float>(height_px_) - status_h_);
+	return std::max(0.0F, height_dip_ - bar_h_ - status_h_);
 }
 
 void Renderer::draw_status(const std::wstring& status)
 {
 	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
 		return;
-	const float bar_top = static_cast<float>(height_px_) - status_h_;
+	const float bar_top = height_dip_ - status_h_;
 	// Статус — своя полоса с фоном и линией-разделителем. Без этого низ окна
 	// сливался с текстом, а на светлой теме выглядел «белым» (жалоба на бар).
 	brush_->SetColor(theme_.status_bg);
-	rt_->FillRectangle(D2D1::RectF(0.0F, bar_top, static_cast<float>(width_px_), static_cast<float>(height_px_)),
+	rt_->FillRectangle(D2D1::RectF(0.0F, bar_top, width_dip_, height_dip_),
 					   brush_);
 	brush_->SetColor(theme_.gutter);
-	rt_->FillRectangle(D2D1::RectF(0.0F, bar_top, static_cast<float>(width_px_), bar_top + 1.0F), brush_);
+	rt_->FillRectangle(D2D1::RectF(0.0F, bar_top, width_dip_, bar_top + 1.0F), brush_);
 	if (status.empty())
 		return;
 	brush_->SetColor(theme_.status_fg);
-	const float top = static_cast<float>(height_px_) - status_h_;
-	const D2D1_RECT_F rect = D2D1::RectF(padding_, top, static_cast<float>(width_px_) - padding_,
-										 static_cast<float>(height_px_));
+	const float top = height_dip_ - status_h_;
+	const D2D1_RECT_F rect = D2D1::RectF(padding_, top, width_dip_ - padding_,
+										 height_dip_);
 	rt_->DrawTextW(status.c_str(), static_cast<UINT32>(status.size()), fmt_ui_, rect, brush_,
 				   D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
@@ -286,18 +294,18 @@ void Renderer::draw_find_bar(const std::wstring& text, bool focus)
 {
 	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
 		return;
-	const float top = static_cast<float>(height_px_) - status_h_ - find_h_;
+	const float top = height_dip_ - status_h_ - find_h_;
 	brush_->SetColor(theme_.gutter);
-	rt_->FillRectangle(D2D1::RectF(0.0F, top, static_cast<float>(width_px_), top + find_h_), brush_);
+	rt_->FillRectangle(D2D1::RectF(0.0F, top, width_dip_, top + find_h_), brush_);
 	brush_->SetColor(focus ? theme_.accent : theme_.status_fg);
 	rt_->DrawRectangle(
-		D2D1::RectF(padding_ - 2.0F, top + 2.0F, static_cast<float>(width_px_) - padding_ + 2.0F,
+		D2D1::RectF(padding_ - 2.0F, top + 2.0F, width_dip_ - padding_ + 2.0F,
 					top + find_h_ - 2.0F),
 		brush_, 1.0F);
 	brush_->SetColor(theme_.text);
 	const std::wstring line = L"Найти: " + text;
 	rt_->DrawTextW(line.c_str(), static_cast<UINT32>(line.size()), fmt_ui_,
-				   D2D1::RectF(padding_ + 2.0F, top + 2.0F, static_cast<float>(width_px_) - padding_,
+				   D2D1::RectF(padding_ + 2.0F, top + 2.0F, width_dip_ - padding_,
 							   top + find_h_ - 2.0F),
 				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
@@ -317,6 +325,101 @@ float Renderer::measure_ui(const std::wstring& text)
 	return width;
 }
 
+void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, float text_h,
+								   std::size_t from, std::size_t to)
+{
+	if (rt_ == nullptr || brush_ == nullptr || from >= to)
+		return;
+	const float lh = std::max(1.0F, ed.metrics().line_height);
+	const std::size_t first = ed.first_visible_line();
+	const std::size_t count = ed.visible_line_count();
+	brush_->SetColor(D2D1::ColorF(0.72F, 0.16F, 0.16F, 0.85F)); // как «красное» слово оригинала
+	for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+	{
+		const std::size_t line_start = ed.buffer().line_start(i);
+		const std::size_t line_len = ed.buffer().line_text(i).size();
+		const std::size_t line_end = line_start + line_len;
+		if (line_end < from || line_start > to)
+			continue;
+		const std::size_t a = from > line_start ? from - line_start : 0;
+		const std::size_t b = std::min(to - line_start, line_len);
+		if (b <= a)
+			continue;
+		const float x1 = padding_ + ed.prefix_width(i, a) - scroll_x;
+		const float x2 = padding_ + ed.prefix_width(i, b) - scroll_x;
+		const float y = bar_h_ + ed.line_top(i) - scroll_y;
+		if (y + lh < bar_h_ || y > bar_h_ + text_h)
+			continue;
+		rt_->FillRectangle(D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F), brush_);
+	}
+}
+
+void Renderer::draw_menu_bar(const MenuBarView& bar)
+{
+	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
+		return;
+
+	// Фон строки меню и линия-разделитель: системное меню на тёмной теме
+	// остаётся белым, поэтому рисуем строку сами.
+	brush_->SetColor(theme_.gutter);
+	rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, width_dip_, bar_h_), brush_);
+	brush_->SetColor(D2D1::ColorF(0.05F, 0.05F, 0.06F));
+	rt_->FillRectangle(D2D1::RectF(0.0F, bar_h_ - 1.0F, width_dip_, bar_h_), brush_);
+
+	for (std::size_t i = 0; i < bar.titles.size() && i < bar.title_rects.size(); ++i)
+	{
+		const D2D1_RECT_F& r = bar.title_rects[i];
+		const bool lit = static_cast<int>(i) == bar.active || static_cast<int>(i) == bar.hot_title;
+		if (lit)
+		{
+			brush_->SetColor(bar.active == static_cast<int>(i) ? theme_.selection : theme_.status_bg);
+			rt_->FillRectangle(r, brush_);
+		}
+		brush_->SetColor(theme_.text);
+		rt_->DrawTextW(bar.titles[i].c_str(), static_cast<UINT32>(bar.titles[i].size()), fmt_ui_, r, brush_,
+					   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+
+	if (!bar.dropdown)
+		return;
+
+	// Выпадающий список: фон, рамка, пункты, галочки и разделители.
+	brush_->SetColor(theme_.status_bg);
+	rt_->FillRectangle(bar.panel, brush_);
+	brush_->SetColor(theme_.accent);
+	rt_->DrawRectangle(bar.panel, brush_, 1.0F);
+
+	for (const MenuItemView& item : bar.items)
+	{
+		if (item.separator)
+		{
+			brush_->SetColor(theme_.gutter);
+			rt_->FillRectangle(D2D1::RectF(item.rect.left + 4.0F, item.rect.top + 1.0F,
+										   item.rect.right - 4.0F, item.rect.top + 2.0F),
+							   brush_);
+			continue;
+		}
+		if (item.hot && item.enabled)
+		{
+			brush_->SetColor(theme_.selection);
+			rt_->FillRectangle(item.rect, brush_);
+		}
+		brush_->SetColor(item.enabled ? theme_.text : theme_.status_fg);
+		const D2D1_RECT_F text_rect = D2D1::RectF(item.rect.left + padding_, item.rect.top,
+												  item.rect.right - padding_, item.rect.bottom);
+		rt_->DrawTextW(item.label.c_str(), static_cast<UINT32>(item.label.size()), fmt_ui_, text_rect,
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		if (item.checked)
+		{
+			brush_->SetColor(theme_.accent);
+			rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(item.rect.left + 4.0F,
+														 (item.rect.top + item.rect.bottom) * 0.5F),
+										   2.0F, 2.0F),
+							 brush_);
+		}
+	}
+}
+
 void Renderer::draw_ask(const AskView& view)
 {
 	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
@@ -331,20 +434,45 @@ void Renderer::draw_ask(const AskView& view)
 	{
 		if (row.text.empty())
 			continue;
-		brush_->SetColor(row.kind == AskKind::accent   ? theme_.accent
-						 : row.kind == AskKind::dim ? theme_.status_fg
-													: theme_.text);
+		const D2D1_COLOR_F base = row.kind == AskKind::accent   ? theme_.accent
+								  : row.kind == AskKind::dim ? theme_.status_fg
+															 : theme_.text;
+		if (row.has_hot && row.hot_from < row.hot_to && row.hot_to <= row.text.size())
+		{
+			// Строка с обрабатываемым словом: обычный текст, слово — красным.
+			const std::wstring prefix = row.text.substr(0, row.hot_from);
+			const std::wstring word = row.text.substr(row.hot_from, row.hot_to - row.hot_from);
+			const std::wstring suffix = row.text.substr(row.hot_to);
+			const auto draw = [&](const std::wstring& part, float left, float right, const D2D1_COLOR_F& color)
+			{
+				if (part.empty() || right <= left)
+					return;
+				brush_->SetColor(color);
+				rt_->DrawTextW(part.c_str(), static_cast<UINT32>(part.size()), fmt_ui_,
+							   D2D1::RectF(left, row.rect.top, right, row.rect.bottom), brush_,
+							   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+			};
+			const float x0 = row.rect.left;
+			const float x1 = x0 + measure_ui(prefix);
+			const float x2 = x1 + measure_ui(word);
+			draw(prefix, x0, x1, base);
+			draw(word, x1, x2 + 1.0F, D2D1::ColorF(0.95F, 0.36F, 0.36F));
+			draw(suffix, x2, row.rect.right, base);
+			continue;
+		}
+		brush_->SetColor(base);
 		rt_->DrawTextW(row.text.c_str(), static_cast<UINT32>(row.text.size()), fmt_ui_, row.rect,
 					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
 
 	for (const AskButtonView& b : view.buttons)
 	{
-		brush_->SetColor(b.focus ? theme_.selection : theme_.status_bg);
+		const bool lit = b.focus || b.hot;
+		brush_->SetColor(lit ? theme_.selection : theme_.status_bg);
 		rt_->FillRectangle(b.rect, brush_);
-		brush_->SetColor(b.focus ? theme_.accent : theme_.status_fg);
+		brush_->SetColor(lit ? theme_.accent : theme_.status_fg);
 		rt_->DrawRectangle(b.rect, brush_, 1.0F);
-		brush_->SetColor(b.focus ? theme_.text : theme_.status_fg);
+		brush_->SetColor(lit ? theme_.text : theme_.status_fg);
 		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_ui_,
 					   D2D1::RectF(b.rect.left + padding_ * 0.5F, b.rect.top,
 								   b.rect.right - padding_ * 0.5F, b.rect.bottom),
@@ -354,7 +482,7 @@ void Renderer::draw_ask(const AskView& view)
 
 void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 					 const std::wstring& find_text, bool find_focus, bool caret,
-					 const AskView* ask)
+					 const AskView* ask, const MenuBarView* bar)
 {
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
@@ -365,7 +493,9 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	rt_->SetTransform(D2D1::Matrix3x2F::Identity());
 	rt_->Clear(theme_.bg);
 
-	const float text_h = std::max(0.0F, static_cast<float>(height_px_) - status_h_ - (show_find_bar ? find_h_ : 0.0F));
+	const float text_h = std::max(
+		0.0F, height_dip_ - bar_h_ - status_h_ - (show_find_bar ? find_h_ : 0.0F));
+	const float text_y0 = bar_h_;
 	ed.set_viewport(text_area_width(), text_h);
 
 	const float scroll_x = ed.scroll_x();
@@ -397,18 +527,17 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 				x2 += cw * 0.5F; // выделение «через» перевод строки видно
 			if (x2 < padding_ - scroll_x)
 				x2 = padding_ - scroll_x;
-			if (x1 > static_cast<float>(width_px_))
+			if (x1 > width_dip_)
 				continue;
-			const float y = ed.line_top(i) - scroll_y;
+			const float y = text_y0 + ed.line_top(i) - scroll_y;
 			rt_->FillRectangle(D2D1::RectF(std::max(x1, padding_ - scroll_x), y + 1.0F,
 										   std::max(x2, x1 + 1.0F), y + lh - 1.0F),
 							   brush_);
 		}
 	}
 
-	rt_->PushAxisAlignedClip(
-		D2D1::RectF(0.0F, 0.0F, static_cast<float>(width_px_), text_h),
-		D2D1_ANTIALIAS_MODE_ALIASED);
+	rt_->PushAxisAlignedClip(D2D1::RectF(0.0F, text_y0, width_dip_, text_y0 + text_h),
+							 D2D1_ANTIALIAS_MODE_ALIASED);
 
 	// Текст видимых строк: раскладки кэшируются по номеру строки и тексту.
 	for (CachedLine& c : cache_)
@@ -419,7 +548,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 		const std::string_view bytes = ed.buffer().line_text(i);
 		if (bytes.empty())
 			continue;
-		const float line_y = ed.line_top(i) - scroll_y;
+		const float line_y = text_y0 + ed.line_top(i) - scroll_y;
 		if (line_y > text_h || line_y + lh < 0.0F)
 			continue; // строка за пределами окна — раскладку не строим
 		// Ширина текста для горизонтальной прокрутки уточняется по видимым
@@ -536,7 +665,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	if (caret)
 	{
 		const float x = padding_ + ed.caret_x() - scroll_x;
-		const float y = ed.caret_y() - scroll_y;
+		const float y = text_y0 + ed.caret_y() - scroll_y;
 		brush_->SetColor(theme_.caret);
 		rt_->FillRectangle(D2D1::RectF(x, y + 1.0F, x + std::max(1.0F, dpi_scale_), y + lh - 1.0F), brush_);
 	}
@@ -545,13 +674,20 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 
 	// Панель вопросов поверх затемнённого документа: видно, что ввод ждут.
 	if (ask != nullptr && dim_brush_ != nullptr)
-		rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, static_cast<float>(width_px_), text_h), dim_brush_);
+		rt_->FillRectangle(D2D1::RectF(0.0F, text_y0, width_dip_, text_y0 + text_h), dim_brush_);
+
+	// Слово, про которое спрашивает ёфикация, подсвечиваем в тексте — как в
+	// AskPanel оригинала: видно, к чему относится вопрос.
+	if (ask != nullptr && ask->has_word)
+		draw_word_highlight(ed, scroll_x, scroll_y, text_h, ask->word_from, ask->word_to);
 
 	if (show_find_bar)
 		draw_find_bar(find_text, find_focus);
 	draw_status(status);
 	if (ask != nullptr)
 		draw_ask(*ask);
+	if (bar != nullptr)
+		draw_menu_bar(*bar);
 
 	const HRESULT hr = rt_->EndDraw();
 	if (hr == D2DERR_RECREATE_TARGET)
