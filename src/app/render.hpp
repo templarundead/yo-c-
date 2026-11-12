@@ -130,6 +130,7 @@ private:
 	struct CachedLine
 	{
 		std::size_t line = 0;
+		std::size_t from = 0; // смещение среза в байтах (длинные строки)
 		std::wstring text;
 		IDWriteTextLayout* layout = nullptr;
 		bool used = false;

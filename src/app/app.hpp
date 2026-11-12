@@ -53,6 +53,7 @@ private:
 	void on_mouse_move(float x, float y);
 	void on_mouse_up();
 	void on_mouse_wheel(int delta);
+	void on_context_menu(int x, int y);
 	void on_vscroll(int code);
 	void on_hscroll(int code);
 	void on_command(int id);
@@ -62,6 +63,12 @@ private:
 	bool open_dialog();
 	bool open_path(const std::filesystem::path& path);
 	bool load_from_path(const std::filesystem::path& path);
+	// Чтение файла заданной кодировкой (меню «Кодировка», Ctrl+R).
+	bool load_forced(const std::filesystem::path& path, Encoding enc, bool bom);
+	void reload_document();
+	void apply_encoding(Encoding enc, bool bom);
+	void apply_eol(Eol eol);
+	void ask_current_word();
 	bool save();
 	bool save_as();
 	bool write_document(const std::filesystem::path& path);
@@ -69,8 +76,11 @@ private:
 
 	void setup_menu();
 	void setup_accels();
+	void update_menu_checks();
 	void update_title();
-	void update_scrollbars();
+	// redraw=false — вызов из WM_PAINT: не просим систему перерисовывать
+	// полосы повторно (иначе лишние проходы отрисовки при каждой прокрутке).
+	void update_scrollbars(bool redraw = true);
 	void sync_metrics();
 	void invalidate();
 	void refresh_view();
@@ -138,6 +148,8 @@ private:
 	HINSTANCE hinst_ = nullptr;
 	HWND hwnd_ = nullptr;
 	HACCEL accel_ = nullptr;
+	HMENU enc_menu_ = nullptr; // подменю «Кодировка» (отметка текущей)
+	HMENU eol_menu_ = nullptr; // подменю «Перевод строк»
 	std::shared_ptr<TextBuffer> buf_;
 	std::unique_ptr<Editor> ed_;
 	Renderer renderer_;
@@ -161,6 +173,7 @@ private:
 	bool show_find_ = false;
 	std::string find_query_;
 	char32_t pending_high_ = 0;
+	int wheel_accum_ = 0; // остаток дельты колеса (тачпады шлют меньше 120)
 	bool always_ask_ = false; // «спрашивать про все слова» (Yo/AlwaysAsk)
 	bool quitting_ = false;	  // пришёл WM_QUIT: панель больше не ждёт ответа
 };

@@ -1,0 +1,3 @@
+// Ресурс для сборочных систем без штатного /MANIFESTINPUT (mingw/zig):
+// манифест встраивается как RT_MANIFEST, тип 24, id 1.
+1 24 "yo-gui.manifest"

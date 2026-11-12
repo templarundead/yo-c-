@@ -19,8 +19,13 @@ file(WRITE "${_yo_tools}/zig-ar.sh"
 	"#!/bin/sh\nexec \"${YO_ZIG_DRIVER}\" ar \"$@\"\n")
 file(WRITE "${_yo_tools}/zig-ranlib.sh"
 	"#!/bin/sh\nexec \"${YO_ZIG_DRIVER}\" ranlib \"$@\"\n")
+file(WRITE "${_yo_tools}/zig-rc.sh" "#!/bin/sh\nexec \"${YO_ZIG_DRIVER}\" rc \"$@\"\n")
 file(CHMOD "${_yo_tools}/zig-ar.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
 file(CHMOD "${_yo_tools}/zig-ranlib.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+file(CHMOD "${_yo_tools}/zig-rc.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+# Компилятор ресурсов (манифест GUI): zig умеет rc.exe подкомандой «zig rc»,
+# а CMake ждёт путь к исполняемому файлу — отсюда обёртка.
+set(CMAKE_RC_COMPILER "${_yo_tools}/zig-rc.sh")
 
 set(CMAKE_AR "${_yo_tools}/zig-ar.sh")
 set(CMAKE_RANLIB "${_yo_tools}/zig-ranlib.sh")

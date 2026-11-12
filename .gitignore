@@ -9,6 +9,7 @@ compile_commands.json
 *.pdb
 *.ilk
 CMakeUserPresets.json
+.deps/
 
 # Локальные копии крупных корпусов для бенчмарков
 /tmp-corpus/

@@ -82,7 +82,11 @@ void Editor::set_metrics(const Metrics& m) noexcept
 {
 	metrics_ = m;
 	width_dirty_ = true;
-	ensure_caret_visible_impl();
+	// Геометрия изменилась — подрезаем прокрутку под новый размер строки, но
+	// курсор в окно НЕ тянем: рендерер вызывает set_metrics на каждой
+	// перерисовке, и прежнее поведение отменяло прокрутку колесом и полосой.
+	scroll_y_ = std::min(scroll_y_, std::max(0.0F, content_height() - view_h_));
+	scroll_x_ = std::max(0.0F, scroll_x_);
 }
 
 std::size_t Editor::clamp_offset(std::size_t offset) const
@@ -507,8 +511,11 @@ void Editor::set_viewport(float width, float height)
 {
 	view_w_ = std::max(0.0F, width);
 	view_h_ = std::max(0.0F, height);
-	// Окно могло появиться/измениться — держим курсор в поле зрения.
-	ensure_caret_visible_impl();
+	// Только подрезка прокрутки под новый размер окна (см. set_metrics):
+	// возврат к курсору здесь отменял бы прокрутку колесом и полосой.
+	scroll_y_ = std::min(scroll_y_, std::max(0.0F, content_height() - view_h_));
+	const float max_x = std::max(0.0F, text_width() - view_w_ + metrics_.char_width);
+	scroll_x_ = std::min(scroll_x_, std::max(0.0F, max_x));
 }
 
 std::size_t Editor::clamp_scroll_y(float y) const

@@ -1,6 +1,7 @@
 // Точка входа GUI: DPI-осведомлённость, COM, окно.
 #include "app.hpp"
 
+#include <commctrl.h>
 #include <windows.h>
 
 #include <shellapi.h>
@@ -45,6 +46,12 @@ std::wstring first_argument()
 int WINAPI WinMain(HINSTANCE hinst, HINSTANCE, LPSTR, int show)
 {
 	enable_dpi_awareness();
+	// Common Controls 6 из манифеста: системные полосы прокрутки и меню
+	// рисуются в оформлении Windows, а не в классическом стиле.
+	INITCOMMONCONTROLSEX icc{};
+	icc.dwSize = sizeof(icc);
+	icc.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
+	InitCommonControlsEx(&icc);
 	if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
 		return 1;
 

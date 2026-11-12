@@ -1,15 +1,19 @@
 #include "app.hpp"
 
+#include "yo/env.hpp"
 #include "yo/utf.hpp"
 #include "yo/mapped.hpp"
 
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <uxtheme.h>
 #include <windowsx.h>
 #include <cstring>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <string_view>
@@ -23,6 +27,8 @@ namespace yo::gui {
 namespace {
 
 constexpr int kCmdOpen = 1001;
+constexpr int kCmdNew = 1005;
+constexpr int kCmdReload = 1006;
 constexpr int kCmdSave = 1002;
 constexpr int kCmdSaveAs = 1003;
 constexpr int kCmdExit = 1004;
@@ -36,6 +42,17 @@ constexpr int kCmdFind = 1016;
 constexpr int kCmdFindNext = 1017;
 constexpr int kCmdYofify = 1030;
 constexpr int kCmdAlwaysAsk = 1031;
+constexpr int kCmdAskWord = 1032;
+
+// Кодировки и переводы строк: пункты-переключатели в меню.
+constexpr int kCmdEncCp1251 = 1040;
+constexpr int kCmdEncUtf8 = 1041;
+constexpr int kCmdEncUtf8Bom = 1042;
+constexpr int kCmdEncUtf16le = 1043;
+constexpr int kCmdEncUtf16be = 1044;
+constexpr int kCmdEolLf = 1050;
+constexpr int kCmdEolCrlf = 1051;
+constexpr int kCmdEolCr = 1052;
 constexpr int kCmdFontBigger = 1020;
 constexpr int kCmdFontSmaller = 1021;
 
@@ -112,6 +129,75 @@ const wchar_t* encoding_name(Encoding enc, bool bom)
 		return L"UTF-16BE";
 	}
 	return L"?";
+}
+
+// Диагностика: при YO_GUI_TRACE=1 в %TEMP%\yo-gui-trace.log пишутся
+// длительности операций. GUI нельзя отладить удалённо, а «зависание» проще
+// всего ловить по времени: видно, что именно заняло секунды.
+bool trace_enabled()
+{
+	static const bool on = env_var("YO_GUI_TRACE").has_value();
+	return on;
+}
+
+void trace(const char* what, double ms, std::size_t bytes = 0)
+{
+	if (!trace_enabled())
+		return;
+	std::error_code ec;
+	static const std::filesystem::path path =
+		std::filesystem::temp_directory_path(ec) / L"yo-gui-trace.log";
+	std::ofstream out(path, std::ios::app);
+	out << what << " " << ms << " мс";
+	if (bytes != 0)
+		out << " " << bytes << " Б";
+	out << "\n";
+}
+
+// Граница слова для пункта «спросить про слово под курсором»: кириллица
+// (байты >= 0x80) — часть слова, дефис тоже, остальная пунктуация и пробелы
+// разделяют.
+bool is_word_break(unsigned char c)
+{
+	if (c < 0x80U)
+	{
+		const bool alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+		return !alnum && c != '-' && c != '_';
+	}
+	return false; // байт многобайтового символа
+}
+
+// Тёмное оформление системных элементов окна.
+//
+// Полосы прокрутки, рамка и заголовок рисуются системой, поэтому цветом
+// клиентской области их не перекрасить. Официального API нет: приложения
+// используют точки входа uxtheme по ординалам (135 — SetPreferredAppMode,
+// 133 — AllowDarkModeForWindow), они живут в Windows 10 1809+ и Windows 11.
+// Если ординалов нет, окно просто останется светлым — не фатально.
+void enable_dark_mode(HWND hwnd)
+{
+	if (HMODULE uxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+	{
+		using SetPreferredAppModeFn = int(WINAPI*)(int);
+		using AllowDarkModeForWindowFn = bool(WINAPI*)(HWND, bool);
+		using FlushMenuThemesFn = void(WINAPI*)();
+
+		const auto ord = [uxtheme](int n) { return GetProcAddress(uxtheme, MAKEINTRESOURCEA(n)); };
+		const auto set_mode =
+			reinterpret_cast<SetPreferredAppModeFn>(reinterpret_cast<void*>(ord(135)));
+		const auto allow =
+			reinterpret_cast<AllowDarkModeForWindowFn>(reinterpret_cast<void*>(ord(133)));
+		const auto flush = reinterpret_cast<FlushMenuThemesFn>(reinterpret_cast<void*>(ord(136)));
+		if (set_mode != nullptr)
+			set_mode(2); // ForceDark
+		if (allow != nullptr)
+			allow(hwnd, true);
+		if (flush != nullptr)
+			flush();
+	}
+	// «Тёмный» вариант оформления Explorer: полосы прокрутки без белых
+	// желобов и кнопок.
+	SetWindowTheme(hwnd, L"DarkMode_Explorer", nullptr);
 }
 
 const wchar_t* eol_name(Eol eol)
@@ -212,6 +298,7 @@ LRESULT CALLBACK App::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 void App::on_create()
 {
 	DragAcceptFiles(hwnd_, TRUE);
+	enable_dark_mode(hwnd_);
 
 	// Тёмный заголовок окна (Windows 10 1903+ / 11). Атрибут 20 для новых
 	// сборок, 19 — для более старых.
@@ -243,7 +330,9 @@ void App::setup_menu()
 	const HMENU bar = CreateMenu();
 
 	const HMENU file = CreatePopupMenu();
+	AppendMenuW(file, MF_STRING, kCmdNew, L"&Создать\tCtrl+N");
 	AppendMenuW(file, MF_STRING, kCmdOpen, L"&Открыть…\tCtrl+O");
+	AppendMenuW(file, MF_STRING, kCmdReload, L"Пере&читать с диска\tCtrl+R");
 	AppendMenuW(file, MF_STRING, kCmdSave, L"&Сохранить\tCtrl+S");
 	AppendMenuW(file, MF_STRING, kCmdSaveAs, L"Сохранить &как…\tCtrl+Shift+S");
 	AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
@@ -267,8 +356,25 @@ void App::setup_menu()
 	const HMENU yofy = CreatePopupMenu();
 	AppendMenuW(yofy, MF_STRING, kCmdYofify, L"&Ёфицировать\tCtrl+E");
 	AppendMenuW(yofy, MF_SEPARATOR, 0, nullptr);
+	AppendMenuW(yofy, MF_STRING, kCmdAskWord, L"Спросить про слово под &курсором\tCtrl+Shift+E");
 	AppendMenuW(yofy, MF_STRING, kCmdAlwaysAsk, L"Спрашивать про &все слова");
 	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(yofy), L"&Ёфикация");
+
+	const HMENU enc = CreatePopupMenu();
+	AppendMenuW(enc, MF_STRING, kCmdEncCp1251, L"CP1251 (Windows)");
+	AppendMenuW(enc, MF_STRING, kCmdEncUtf8, L"UTF-8");
+	AppendMenuW(enc, MF_STRING, kCmdEncUtf8Bom, L"UTF-8 с BOM");
+	AppendMenuW(enc, MF_STRING, kCmdEncUtf16le, L"UTF-16LE");
+	AppendMenuW(enc, MF_STRING, kCmdEncUtf16be, L"UTF-16BE");
+	enc_menu_ = enc;
+	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"&Кодировка");
+
+	const HMENU eol = CreatePopupMenu();
+	AppendMenuW(eol, MF_STRING, kCmdEolLf, L"LF (Unix)");
+	AppendMenuW(eol, MF_STRING, kCmdEolCrlf, L"CRLF (Windows)");
+	AppendMenuW(eol, MF_STRING, kCmdEolCr, L"CR (Mac)");
+	eol_menu_ = eol;
+	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(eol), L"Пере&вод строк");
 
 	const HMENU view = CreatePopupMenu();
 	AppendMenuW(view, MF_STRING, kCmdFontBigger, L"&Крупнее\tCtrl++");
@@ -281,7 +387,9 @@ void App::setup_menu()
 void App::setup_accels()
 {
 	ACCEL accels[] = {
+		{ FCONTROL | FVIRTKEY, 'N', kCmdNew },
 		{ FCONTROL | FVIRTKEY, 'O', kCmdOpen },
+		{ FCONTROL | FVIRTKEY, 'R', kCmdReload },
 		{ FCONTROL | FVIRTKEY, 'S', kCmdSave },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'S', kCmdSaveAs },
 		{ FCONTROL | FVIRTKEY, 'Z', kCmdUndo },
@@ -292,6 +400,7 @@ void App::setup_accels()
 		{ FCONTROL | FVIRTKEY, 'A', kCmdSelectAll },
 		{ FCONTROL | FVIRTKEY, 'F', kCmdFind },
 		{ FCONTROL | FVIRTKEY, 'E', kCmdYofify },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'E', kCmdAskWord },
 		{ FVIRTKEY, VK_F3, kCmdFindNext },
 		{ FCONTROL | FVIRTKEY, VK_OEM_PLUS, kCmdFontBigger },
 		{ FCONTROL | FVIRTKEY, VK_OEM_MINUS, kCmdFontSmaller },
@@ -302,6 +411,38 @@ void App::setup_accels()
 }
 
 // ---------------------------------------------------------------- вид
+
+void App::update_menu_checks()
+{
+	int enc_id = kCmdEncUtf8;
+	switch (enc_)
+	{
+	case Encoding::cp1251:
+		enc_id = kCmdEncCp1251;
+		break;
+	case Encoding::utf8:
+		enc_id = bom_ ? kCmdEncUtf8Bom : kCmdEncUtf8;
+		break;
+	case Encoding::utf16le:
+		enc_id = kCmdEncUtf16le;
+		break;
+	case Encoding::utf16be:
+		enc_id = kCmdEncUtf16be;
+		break;
+	}
+	int eol_id = kCmdEolLf;
+	if (eol_ == Eol::crlf)
+		eol_id = kCmdEolCrlf;
+	else if (eol_ == Eol::cr)
+		eol_id = kCmdEolCr;
+
+	if (enc_menu_ != nullptr)
+		CheckMenuRadioItem(enc_menu_, static_cast<UINT>(kCmdEncCp1251), static_cast<UINT>(kCmdEncUtf16be),
+						   static_cast<UINT>(enc_id), MF_BYCOMMAND);
+	if (eol_menu_ != nullptr)
+		CheckMenuRadioItem(eol_menu_, static_cast<UINT>(kCmdEolLf), static_cast<UINT>(kCmdEolCr),
+						   static_cast<UINT>(eol_id), MF_BYCOMMAND);
+}
 
 void App::sync_metrics()
 {
@@ -321,8 +462,13 @@ void App::invalidate()
 void App::refresh_view()
 {
 	sync_metrics();
+	// Курсор после смены шрифта/документа должен быть виден — делаем это
+	// явно: set_viewport/set_metrics больше не трогают прокрутку.
+	if (ed_)
+		ed_->ensure_caret_visible();
 	update_scrollbars();
 	update_title();
+	update_menu_checks();
 	invalidate();
 }
 
@@ -335,7 +481,7 @@ void App::update_title()
 	SetWindowTextW(hwnd_, title.c_str());
 }
 
-void App::update_scrollbars()
+void App::update_scrollbars(bool redraw)
 {
 	if (hwnd_ == nullptr || !ed_)
 		return;
@@ -346,7 +492,7 @@ void App::update_scrollbars()
 	sv.nMax = static_cast<int>(std::max<std::size_t>(1, buf_->line_count()) - 1);
 	sv.nPage = static_cast<UINT>(std::max<std::size_t>(1, ed_->visible_line_count()));
 	sv.nPos = static_cast<int>(ed_->first_visible_line());
-	SetScrollInfo(hwnd_, SB_VERT, &sv, TRUE);
+	SetScrollInfo(hwnd_, SB_VERT, &sv, redraw ? TRUE : FALSE);
 
 	const float cw = std::max(1.0F, renderer_.char_width());
 	SCROLLINFO sh{};
@@ -356,7 +502,7 @@ void App::update_scrollbars()
 	sh.nMax = static_cast<int>(std::max(1.0F, ed_->text_width() / cw));
 	sh.nPage = static_cast<UINT>(std::max(1.0F, renderer_.text_area_width() / cw));
 	sh.nPos = static_cast<int>(ed_->scroll_x() / cw);
-	SetScrollInfo(hwnd_, SB_HORZ, &sh, TRUE);
+	SetScrollInfo(hwnd_, SB_HORZ, &sh, redraw ? TRUE : FALSE);
 }
 
 std::string App::insert_eol_bytes() const { return std::string(eol_bytes(eol_)); }
@@ -408,10 +554,16 @@ void App::on_paint()
 	renderer_.resize(static_cast<UINT>(std::max<LONG>(1, rc.right)), static_cast<UINT>(std::max<LONG>(1, rc.bottom)));
 	sync_metrics();
 	const AskView view = ask_view();
+	const auto paint_started = std::chrono::steady_clock::now();
 	renderer_.paint(*ed_, status_text(), show_find_, widen(find_query_), true, caret_on_,
 					ask_.active && ask_.has_panel ? &view : nullptr);
-	// Рендер мог подкрутить вид, чтобы курсор остался в окне.
-	update_scrollbars();
+	const double paint_ms =
+		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paint_started).count();
+	if (paint_ms > 16.0)
+		trace("отрисовка", paint_ms); // дольше кадра — повод посмотреть, что дорого
+	// Рендер мог изменить размеры видимой области — синхронизируем полосы,
+	// не порождая новых перерисовок.
+	update_scrollbars(false);
 	EndPaint(hwnd_, &ps);
 }
 
@@ -421,6 +573,10 @@ void App::on_size()
 	GetClientRect(hwnd_, &rc);
 	renderer_.resize(static_cast<UINT>(std::max<LONG>(1, rc.right)), static_cast<UINT>(std::max<LONG>(1, rc.bottom)));
 	sync_metrics();
+	// Окно могло стать меньше — курсор должен остаться видимым (при прокрутке
+	// колесом или полосой мы его, наоборот, не трогаем).
+	if (ed_)
+		ed_->ensure_caret_visible();
 	if (ask_.active)
 		ask_build_view(); // панель пересчитывается под новый размер окна
 	update_scrollbars();
@@ -539,6 +695,67 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 			vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_DELETE)
 			return;
 	}
+	// Сочетания обрабатываем и здесь, а не только через таблицу акселераторов:
+	// TranslateAccelerator легко «теряет» нажатия (например, когда фокус у
+	// диалога или таблица не создалась), и тогда Ctrl+C/V/Z молча не работают.
+	if (ctrl && !ask_.active)
+	{
+		switch (vk)
+		{
+		case 'N':
+			on_command(kCmdNew);
+			return;
+		case 'O':
+			on_command(kCmdOpen);
+			return;
+		case 'R':
+			on_command(kCmdReload);
+			return;
+		case 'S':
+			on_command(shift ? kCmdSaveAs : kCmdSave);
+			return;
+		case 'Z':
+			on_command(kCmdUndo);
+			return;
+		case 'Y':
+			on_command(kCmdRedo);
+			return;
+		case 'X':
+			on_command(kCmdCut);
+			return;
+		case 'C':
+			on_command(kCmdCopy);
+			return;
+		case 'V':
+			on_command(kCmdPaste);
+			return;
+		case 'A':
+			on_command(kCmdSelectAll);
+			return;
+		case 'F':
+			on_command(kCmdFind);
+			return;
+		case 'E':
+			on_command(shift ? kCmdAskWord : kCmdYofify);
+			return;
+		case VK_OEM_PLUS:
+		case VK_ADD:
+			on_command(kCmdFontBigger);
+			return;
+		case VK_OEM_MINUS:
+		case VK_SUBTRACT:
+			on_command(kCmdFontSmaller);
+			return;
+		default:
+			break;
+		}
+	}
+	if (vk == VK_F3 && !ask_.active)
+	{
+		find_next();
+		return;
+	}
+
 	const bool extend = shift;
 	switch (vk)
 	{
@@ -621,8 +838,30 @@ void App::on_mouse_up()
 
 void App::on_mouse_wheel(int delta)
 {
-	const int lines = -delta / WHEEL_DELTA * 3;
-	ed_->scroll_lines(lines);
+	// Колёса с мелким шагом присылают дельты меньше WHEEL_DELTA (тачпады):
+	// без накопления такие события терялись целиком, и прокрутка «не работала».
+	wheel_accum_ += -delta;
+	const int steps = wheel_accum_ / WHEEL_DELTA;
+	if (steps == 0)
+		return;
+	wheel_accum_ -= steps * WHEEL_DELTA;
+
+	if (GetKeyState(VK_CONTROL) < 0)
+	{
+		// Ctrl+колесо — масштаб, как в браузерах.
+		on_command(steps > 0 ? kCmdFontBigger : kCmdFontSmaller);
+		return;
+	}
+	if (GetKeyState(VK_SHIFT) < 0)
+	{
+		// Shift+колесо — горизонтальная прокрутка.
+		const float cw = std::max(1.0F, renderer_.char_width());
+		ed_->scroll_by(static_cast<float>(steps) * 3.0F * cw, 0.0F);
+	}
+	else
+	{
+		ed_->scroll_lines(static_cast<long>(steps) * 3L);
+	}
 	update_scrollbars();
 	invalidate();
 }
@@ -705,6 +944,47 @@ void App::on_hscroll(int code)
 	invalidate();
 }
 
+// ---------------------------------------------------------------- контекстное меню
+
+void App::on_context_menu(int x, int y)
+{
+	if (ask_.active)
+		return;
+
+	POINT pt{ x, y };
+	if (x == -1 && y == -1)
+	{
+		// Меню с клавиатуры (Shift+F10 / клавиша «меню»): ставим у курсора.
+		const CaretPos pos = ed_->caret_pos();
+		pt.x = static_cast<LONG>(renderer_.padding() + ed_->caret_x() - ed_->scroll_x());
+		pt.y = static_cast<LONG>(ed_->line_top(pos.line - 1) - ed_->scroll_y() + renderer_.line_height());
+		ClientToScreen(hwnd_, &pt);
+	}
+
+	const bool has_sel = ed_->has_selection();
+	const bool can_undo = buf_->can_undo();
+
+	const HMENU menu = CreatePopupMenu();
+	AppendMenuW(menu, MF_STRING | (can_undo ? 0U : MF_GRAYED), kCmdUndo, L"Отменить\tCtrl+Z");
+	AppendMenuW(menu, MF_STRING | (buf_->can_redo() ? 0U : MF_GRAYED), kCmdRedo, L"Повторить\tCtrl+Y");
+	AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+	AppendMenuW(menu, MF_STRING | (has_sel ? 0U : MF_GRAYED), kCmdCut, L"Вырезать\tCtrl+X");
+	AppendMenuW(menu, MF_STRING | (has_sel ? 0U : MF_GRAYED), kCmdCopy, L"Копировать\tCtrl+C");
+	AppendMenuW(menu, MF_STRING | (readonly_ ? MF_GRAYED : 0U), kCmdPaste, L"Вставить\tCtrl+V");
+	AppendMenuW(menu, MF_STRING, kCmdSelectAll, L"Выделить всё\tCtrl+A");
+	AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+	AppendMenuW(menu, MF_STRING, kCmdYofify, L"Ёфицировать\tCtrl+E");
+	AppendMenuW(menu, MF_STRING, kCmdAskWord, L"Спросить про слово под курсором");
+	AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+	AppendMenuW(menu, MF_STRING, kCmdFind, L"Найти…\tCtrl+F");
+
+	SetForegroundWindow(hwnd_); // иначе меню не закрывается по клику мимо
+	TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, hwnd_,
+				   nullptr);
+	PostMessageW(hwnd_, WM_NULL, 0, 0); // известная «заплатка» меню Win32
+	DestroyMenu(menu);
+}
+
 // ---------------------------------------------------------------- команды
 
 void App::on_command(int id)
@@ -770,6 +1050,40 @@ void App::on_command(int id)
 			refresh_view();
 		}
 		break;
+	case kCmdNew:
+		if (ask_save_changes())
+			new_document();
+		break;
+	case kCmdReload:
+		reload_document();
+		break;
+	case kCmdEncCp1251:
+		apply_encoding(Encoding::cp1251, false);
+		break;
+	case kCmdEncUtf8:
+		apply_encoding(Encoding::utf8, false);
+		break;
+	case kCmdEncUtf8Bom:
+		apply_encoding(Encoding::utf8, true);
+		break;
+	case kCmdEncUtf16le:
+		apply_encoding(Encoding::utf16le, false);
+		break;
+	case kCmdEncUtf16be:
+		apply_encoding(Encoding::utf16be, false);
+		break;
+	case kCmdEolLf:
+		apply_eol(Eol::lf);
+		break;
+	case kCmdEolCrlf:
+		apply_eol(Eol::crlf);
+		break;
+	case kCmdEolCr:
+		apply_eol(Eol::cr);
+		break;
+	case kCmdAskWord:
+		ask_current_word();
+		break;
 	default:
 		break;
 	}
@@ -814,26 +1128,64 @@ void App::clipboard_copy(bool cut)
 
 void App::clipboard_paste()
 {
-	if (readonly_ || !OpenClipboard(hwnd_))
-		return;
-	HANDLE data = GetClipboardData(CF_UNICODETEXT);
-	std::string utf8;
-	if (data != nullptr)
+	if (readonly_)
 	{
-		const auto* wide = static_cast<const wchar_t*>(GlobalLock(data));
-		if (wide != nullptr)
+		MessageBeep(MB_ICONASTERISK);
+		return;
+	}
+	if (!OpenClipboard(hwnd_))
+		return;
+	std::string utf8;
+	if (HANDLE data = GetClipboardData(CF_UNICODETEXT))
+	{
+		if (const auto* wide = static_cast<const wchar_t*>(GlobalLock(data)))
 		{
 			utf8 = wide_to_utf8(wide);
 			GlobalUnlock(data);
 		}
 	}
+	else if (HANDLE ansi = GetClipboardData(CF_TEXT))
+	{
+		// Часть программ (и консоль) кладёт только 8-битный текст.
+		if (const auto* narrow = static_cast<const char*>(GlobalLock(ansi)))
+		{
+			const int need = MultiByteToWideChar(CP_ACP, 0, narrow, -1, nullptr, 0);
+			if (need > 1)
+			{
+				std::wstring wide(static_cast<std::size_t>(need), L'\0');
+				const int got = MultiByteToWideChar(CP_ACP, 0, narrow, -1, wide.data(), need);
+				if (got > 0)
+					utf8 = wide_to_utf8(std::wstring_view(wide.c_str()));
+			}
+			GlobalUnlock(ansi);
+		}
+	}
 	CloseClipboard();
 	if (utf8.empty())
+	{
+		MessageBeep(MB_ICONASTERISK);
 		return;
-	ed_->insert_text(normalize_newlines(utf8, eol_));
-	update_scrollbars();
-	update_title();
-	invalidate();
+	}
+
+	// Перерисовка одна на всю вставку: иначе на каждый вставленный фрагмент
+	// приходится полный цикл раскладки, и на длинном тексте окно «замирает».
+	const std::string normalized = normalize_newlines(utf8, eol_);
+	SendMessageW(hwnd_, WM_SETREDRAW, FALSE, 0);
+	const auto started = std::chrono::steady_clock::now();
+	const bool ok = ed_->paste(normalized);
+	trace("вставка", std::chrono::duration<double, std::milli>(
+						 std::chrono::steady_clock::now() - started).count(),
+		  normalized.size());
+	SendMessageW(hwnd_, WM_SETREDRAW, TRUE, 0);
+	if (ok)
+	{
+		caret_on_ = true;
+		refresh_view();
+	}
+	else
+	{
+		RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+	}
 }
 
 // ---------------------------------------------------------------- поиск
@@ -986,8 +1338,12 @@ void App::run_yofification()
 	sync_metrics();
 	yofy_->stats().reset();
 	ask_.line = buf_->line_of(from);
+	const auto yofy_started = std::chrono::steady_clock::now();
 	last_yofy_ = yofify_range(*buf_, from, to, *yofy_,
 							  [this](std::size_t line) { ask_.line = line; });
+	trace("ёфикация", std::chrono::duration<double, std::milli>(
+						  std::chrono::steady_clock::now() - yofy_started).count(),
+		  to - from);
 	SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
 
 	if (last_yofy_.changed)
@@ -1133,6 +1489,13 @@ AskAnswer App::ask_word(const AskRequest& req)
 		ask_.focus = (req.focus_first || req.word2.empty()) ? std::max(ye, 0) : std::max(yo, 0);
 	}
 	scroll_line_into_view(ask_.line);
+	// Если панель не поместилась (крошечное окно), модальный цикл ждал бы
+	// ответа, которого негде нажать: отвечаем «пропустить» и идём дальше.
+	if (!ask_.has_panel)
+	{
+		invalidate();
+		return AskAnswer::skip;
+	}
 	ask_.active = true;
 	SetCursor(LoadCursorW(nullptr, IDC_ARROW));
 	invalidate();
@@ -1222,8 +1585,12 @@ void App::ask_char(wchar_t ch)
 			ask_answer(ask_.buttons[index].answer);
 		return;
 	}
-	if (ch == L'\r' || ch == L'\n')
-		ask_answer(ask_.buttons.at(static_cast<std::size_t>(ask_.focus)).answer);
+	if ((ch == L'\r' || ch == L'\n') && !ask_.buttons.empty())
+	{
+		const auto index = static_cast<std::size_t>(std::clamp(ask_.focus, 0,
+			static_cast<int>(ask_.buttons.size()) - 1));
+		ask_answer(ask_.buttons[index].answer);
+	}
 }
 
 void App::ask_click(float x, float y)
@@ -1317,6 +1684,116 @@ bool App::load_from_path(const std::filesystem::path& path)
 	if (is_rtf_path(path))
 		readonly_ = true;
 	return true;
+}
+
+bool App::load_forced(const std::filesystem::path& path, Encoding enc, bool bom)
+{
+	std::error_code ec;
+	if (!std::filesystem::exists(path, ec))
+		return false;
+	auto in = open_binary(path);
+	if (!in)
+	{
+		MessageBoxW(hwnd_, L"Не удалось открыть файл.", L"Ё", MB_ICONERROR);
+		return false;
+	}
+	if (bom)
+		in->seekg(is_utf16(enc) ? 2 : 3);
+
+	LineReader reader(std::move(in), enc);
+	std::string text;
+	UString line;
+	std::string eol;
+	while (reader.next(line, eol))
+	{
+		text += encode_line(line, Encoding::utf8);
+		text += eol;
+	}
+	set_document(std::make_shared<TextBuffer>(std::make_shared<MemorySource>(std::move(text))), path, enc,
+				 bom);
+	readonly_ = is_rtf_path(path);
+	return true;
+}
+
+void App::reload_document()
+{
+	if (path_.empty())
+		return;
+	if (buf_ && buf_->modified() && !ask_save_changes())
+		return;
+	load_forced(path_, enc_, bom_);
+}
+
+void App::apply_encoding(Encoding enc, bool bom)
+{
+	enc_ = enc;
+	bom_ = bom;
+	// Для открытого неизменённого файла сразу показываем результат: читаем
+	// диск заново выбранной кодировкой. Изменённый документ не трогаем —
+	// иначе правки потерялись бы; кодировка применится при сохранении.
+	if (!path_.empty() && buf_ && !buf_->modified())
+		load_forced(path_, enc_, bom_);
+	else
+		refresh_view();
+}
+
+void App::apply_eol(Eol eol)
+{
+	eol_ = eol;
+	refresh_view();
+}
+
+void App::ask_current_word()
+{
+	if (!ed_ || buf_->line_count() == 0)
+		return;
+	if (readonly_)
+	{
+		MessageBeep(MB_ICONASTERISK);
+		return;
+	}
+	if (!ensure_yoficator())
+		return;
+
+	// Слово под курсором спрашиваем тем же движком, что и полную ёфикацию:
+	// временно включаем «спрашивать про все слова», чтобы панель вопросов
+	// появилась гарантированно, даже если слово не числится неоднозначным.
+	const std::size_t line_no = buf_->line_of(ed_->caret());
+	const std::string_view text = buf_->line_text(line_no);
+	const std::size_t line_start = buf_->line_start(line_no);
+	const std::size_t at = ed_->caret() - line_start;
+
+	std::size_t begin = std::min(at, text.size());
+	while (begin > 0 && !is_word_break(static_cast<unsigned char>(text[begin - 1])))
+		--begin;
+	std::size_t end = std::min(at, text.size());
+	while (end < text.size() && !is_word_break(static_cast<unsigned char>(text[end])))
+		++end;
+	if (end <= begin)
+	{
+		MessageBeep(MB_ICONASTERISK);
+		return;
+	}
+
+	const bool saved_always_ask = always_ask_;
+	set_always_ask(true);
+	ask_.line = line_no;
+	SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+	yofy_->stats().reset();
+	last_yofy_ = yofify_range(*buf_, line_start + begin, line_start + end, *yofy_,
+							  [this](std::size_t line) { ask_.line = line; });
+	SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+	set_always_ask(saved_always_ask);
+
+	if (last_yofy_.changed)
+	{
+		ed_->set_caret(line_start + begin);
+		refresh_view();
+	}
+	else
+	{
+		invalidate();
+	}
 }
 
 bool App::open_dialog()
@@ -1460,6 +1937,7 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		case WM_MOUSEMOVE:
 		case WM_LBUTTONDBLCLK:
 		case WM_MOUSEWHEEL:
+		case WM_CONTEXTMENU:
 		case WM_DROPFILES:
 		case WM_COMMAND:
 		case WM_SYSCOMMAND:
@@ -1531,6 +2009,25 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	}
 	case WM_LBUTTONUP:
 		on_mouse_up();
+		return 0;
+	case WM_RBUTTONDOWN:
+	{
+		// Правый клик вне выделения ставит курсор (как в любом редакторе):
+		// контекстное меню тогда относится к слову под мышью.
+		const float x = static_cast<float>(GET_X_LPARAM(lp));
+		const float y = static_cast<float>(GET_Y_LPARAM(lp));
+		const std::size_t hit = ed_->offset_at(x - renderer_.padding() + ed_->scroll_x(),
+											  y - ed_->scroll_y());
+		if (!ed_->has_selection() || hit < ed_->sel_begin() || hit > ed_->sel_end())
+		{
+			ed_->set_caret(hit);
+			invalidate();
+		}
+		SetFocus(hwnd_);
+		return 0;
+	}
+	case WM_CONTEXTMENU:
+		on_context_menu(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
 		return 0;
 	case WM_MOUSEMOVE:
 		on_mouse_move(static_cast<float>(GET_X_LPARAM(lp)), static_cast<float>(GET_Y_LPARAM(lp)));

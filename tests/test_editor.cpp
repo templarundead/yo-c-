@@ -289,3 +289,40 @@ TEST_CASE("редактор поверх mmap: правки не трогают 
 	ed->buffer().undo();
 	CHECK(ed->buffer().text() == "файл\r\nне меняется\n");
 }
+
+TEST_CASE("прокрутка: перерисовка не отматывает вид назад", "[editor]")
+{
+	auto ed = editor("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F); // 3 строки в окне
+
+	// Курсор в начале документа, пользователь прокрутил колесом/полосой.
+	ed->scroll_lines(4);
+	CHECK(ed->scroll_y() == 40.0F);
+	CHECK(ed->first_visible_line() == 4);
+
+	// Рендерер на каждой перерисовке заново сообщает размеры окна и метрики:
+	// это не должно отменять прокрутку (регрессия «не работает скролл»).
+	ed->set_viewport(100.0F, 30.0F);
+	CHECK(ed->scroll_y() == 40.0F);
+	CHECK(ed->first_visible_line() == 4);
+	ed->set_metrics(m);
+	CHECK(ed->scroll_y() == 40.0F);
+	CHECK(ed->first_visible_line() == 4);
+
+	// Горизонтальная прокрутка так же переживает перерисовку.
+	auto wide = editor(std::string(200, 'x'));
+	wide->set_metrics(m);
+	wide->set_viewport(100.0F, 30.0F);
+	wide->scroll_by(120.0F, 0.0F);
+	CHECK(wide->scroll_x() == 120.0F);
+	wide->set_viewport(100.0F, 30.0F);
+	CHECK(wide->scroll_x() == 120.0F);
+
+	// А вот курсор, уехавший за край, по-прежнему возвращается в поле зрения.
+	ed->move_doc_start();
+	CHECK(ed->scroll_y() == 0.0F);
+}

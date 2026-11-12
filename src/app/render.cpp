@@ -11,6 +11,11 @@ namespace {
 
 constexpr UINT kDpiDefault = 96;
 
+// Строки длиннее этого раскладываются только видимым срезом (см. paint).
+constexpr std::size_t kLineSliceBytes = 4096;
+// Запас символов слева и справа от видимой области среза.
+constexpr float kSliceMarginCells = 64.0F;
+
 } // namespace
 
 Renderer::~Renderer() { shutdown(); }
@@ -245,7 +250,17 @@ float Renderer::text_area_height() const noexcept
 
 void Renderer::draw_status(const std::wstring& status)
 {
-	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr || status.empty())
+	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
+		return;
+	const float bar_top = static_cast<float>(height_px_) - status_h_;
+	// Статус — своя полоса с фоном и линией-разделителем. Без этого низ окна
+	// сливался с текстом, а на светлой теме выглядел «белым» (жалоба на бар).
+	brush_->SetColor(theme_.status_bg);
+	rt_->FillRectangle(D2D1::RectF(0.0F, bar_top, static_cast<float>(width_px_), static_cast<float>(height_px_)),
+					   brush_);
+	brush_->SetColor(theme_.gutter);
+	rt_->FillRectangle(D2D1::RectF(0.0F, bar_top, static_cast<float>(width_px_), bar_top + 1.0F), brush_);
+	if (status.empty())
 		return;
 	brush_->SetColor(theme_.status_fg);
 	const float top = static_cast<float>(height_px_) - status_h_;
@@ -390,17 +405,45 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
 	{
 		const std::string_view bytes = ed.buffer().line_text(i);
-		std::wstring wide = utf8_to_wide(bytes);
-		if (wide.empty())
+		if (bytes.empty())
 			continue;
+		const float line_y = ed.line_top(i) - scroll_y;
+		if (line_y > text_h || line_y + lh < 0.0F)
+			continue; // строка за пределами окна — раскладку не строим
 		// Ширина текста для горизонтальной прокрутки уточняется по видимым
 		// строкам: полный проход по гигабайтному файлу недопустим.
 		ed.note_line_cells(ed.prefix_cells(i, bytes.size()));
 
+		// Длинную строку раскладываем только видимым окном символов: иначе
+		// DWrite формирует и растеризует всю строку при каждой перерисовке
+		// (а курсор мигает дважды в секунду) — окно «замирает» на длинных
+		// строках, что и выглядело как зависание после вставки.
+		std::size_t from_byte = 0;
+		std::wstring wide;
+		if (bytes.size() <= kLineSliceBytes)
+		{
+			wide = utf8_to_wide(bytes);
+		}
+		else
+		{
+			const float margin = kSliceMarginCells * std::max(1.0F, cw);
+			const float doc_y = ed.line_top(i) + 1.0F;
+			const std::size_t b0 = ed.offset_at(std::max(0.0F, scroll_x - margin), doc_y);
+			const std::size_t b1 = ed.offset_at(scroll_x + text_area_width() + margin, doc_y);
+			from_byte = std::min(b0, bytes.size());
+			// Срез может начинаться посреди символа — сдвигаем к его началу.
+			while (from_byte < bytes.size() && (static_cast<unsigned char>(bytes[from_byte]) & 0xC0U) == 0x80U)
+				++from_byte;
+			const std::size_t to_byte = std::min(std::max(b1, from_byte), bytes.size());
+			wide = utf8_to_wide(bytes.substr(from_byte, to_byte - from_byte));
+		}
+		if (wide.empty())
+			continue;
+
 		CachedLine* slot = nullptr;
 		for (CachedLine& c : cache_)
 		{
-			if (!c.used && c.line == i && c.text == wide)
+			if (!c.used && c.line == i && c.from == from_byte && c.text == wide)
 			{
 				slot = &c;
 				break;
@@ -425,12 +468,13 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 			// Ищем свободный слот: неиспользованный с другим текстом.
 			for (CachedLine& c : cache_)
 			{
-				if (!c.used && c.line != i)
+				if (!c.used)
 				{
 					if (c.layout != nullptr)
 						c.layout->Release();
 					c.layout = layout;
 					c.line = i;
+					c.from = from_byte;
 					c.text = std::move(wide);
 					c.used = true;
 					slot = &c;
@@ -442,6 +486,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 				CachedLine c;
 				c.layout = layout;
 				c.line = i;
+				c.from = from_byte;
 				c.text = std::move(wide);
 				c.used = true;
 				cache_.push_back(std::move(c));
@@ -455,11 +500,10 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 
 		if (slot->layout == nullptr)
 			continue;
-		const float y = ed.line_top(i) - scroll_y;
-		if (y > text_h || y + lh < 0.0F)
-			continue;
-		rt_->DrawTextLayout(D2D1::Point2F(padding_ - scroll_x, y), slot->layout, brush_,
-							D2D1_DRAW_TEXT_OPTIONS_NONE);
+		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
+		const float slice_x = ed.prefix_width(i, from_byte);
+		rt_->DrawTextLayout(D2D1::Point2F(padding_ + slice_x - scroll_x, line_y), slot->layout, brush_,
+							D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
 	// Лишние раскладки выбрасываем, чтобы кэш не рос.
 	for (auto it = cache_.begin(); it != cache_.end();)
