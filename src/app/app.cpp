@@ -1368,10 +1368,12 @@ void App::on_context_menu(int x, int y)
 	{
 		// Меню с клавиатуры (Shift+F10 / клавиша «меню»): ставим у курсора.
 		const CaretPos pos = ed_->caret_pos();
+		// Координаты каретки — в DIP, а ClientToScreen ждёт физические пиксели.
 		POINT client{};
-		client.x = static_cast<LONG>(renderer_.padding() + ed_->caret_x() - ed_->scroll_x());
-		client.y = static_cast<LONG>(renderer_.bar_height() + ed_->line_top(pos.line - 1) - ed_->scroll_y() +
-									 renderer_.line_height());
+		client.x = static_cast<LONG>((renderer_.padding() + ed_->caret_x() - ed_->scroll_x()) * scale);
+		client.y = static_cast<LONG>((renderer_.bar_height() + ed_->line_top(pos.line - 1) - ed_->scroll_y() +
+									  renderer_.line_height()) *
+									scale);
 		pt = client;
 		ClientToScreen(hwnd_, &pt);
 	}
@@ -1880,9 +1882,14 @@ void App::ask_build_view()
 		texts.reason += std::to_string(ask_count_);
 		texts.reason += ", Esc — прервать)";
 	}
+	// Раскладка панели — в DIP, как и всё остальное: GetClientRect отдаёт
+	// физические пиксели, поэтому размеры делим на масштаб.
+	const float scale = std::max(1.0F, renderer_.dpi_scale());
+	const float client_w = static_cast<float>(std::max<LONG>(1, rc.right)) / scale;
+	const float client_h = static_cast<float>(std::max<LONG>(1, rc.bottom)) / scale;
 	AskLayoutInput in;
-	in.client_w = static_cast<float>(std::max<LONG>(1, rc.right));
-	in.client_h = static_cast<float>(std::max<LONG>(1, rc.bottom));
+	in.client_w = client_w;
+	in.client_h = client_h;
 	in.status_h = renderer_.status_height();
 	in.padding = renderer_.padding();
 	in.line_height = renderer_.line_height();
@@ -1933,7 +1940,8 @@ void App::ask_build_view()
 	// Панель ставим по центру текстовой области. Прижатая к низу, она терялась
 	// среди текста, а программа в это время ждала ответа — со стороны это
 	// выглядело как зависание.
-	const float area_h = std::max(1.0F, static_cast<float>(rc.bottom) - renderer_.status_height());
+	const float area_h =
+		std::max(1.0F, client_h - renderer_.status_height() - renderer_.bar_height());
 	const float dy = std::max(0.0F, (area_h - layout.h) * 0.5F) - layout.y;
 
 	const float pad = std::max(2.0F, renderer_.padding());
