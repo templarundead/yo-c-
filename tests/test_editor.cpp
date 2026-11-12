@@ -326,3 +326,28 @@ TEST_CASE("прокрутка: перерисовка не отматывает 
 	ed->move_doc_start();
 	CHECK(ed->scroll_y() == 0.0F);
 }
+
+TEST_CASE("клик: экранные координаты при прокрутке", "[editor]")
+{
+	auto ed = editor("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F); // три строки в окне
+
+	ed->scroll_lines(5);
+	REQUIRE(ed->first_visible_line() == 5);
+
+	// Верхняя строка окна — это строка 5 документа, а не 0 и не 10.
+	CHECK(ed->offset_at_client(0.0F, 1.0F) == ed->buffer().line_start(5));
+	CHECK(ed->offset_at_client(0.0F, 21.0F) == ed->buffer().line_start(7));
+	// Отступ слева учитывается отдельно.
+	CHECK(ed->offset_at_client(16.0F, 1.0F, 16.0F) == ed->buffer().line_start(5));
+	CHECK(ed->offset_at_client(24.0F, 1.0F, 16.0F) == ed->buffer().line_start(5) + 1);
+
+	// Без прокрутки — как раньше.
+	ed->scroll_lines(-100);
+	CHECK(ed->offset_at_client(0.0F, 1.0F) == 0);
+	CHECK(ed->offset_at_client(0.0F, 11.0F) == ed->buffer().line_start(1));
+}

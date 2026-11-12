@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace yo::gui {
@@ -91,6 +92,11 @@ private:
 	bool ensure_yoficator();
 	void run_yofification();
 	void set_always_ask(bool on);
+	// «Ёфикация без вопросов»: неоднозначные слова пропускаются молча.
+	void set_silent_yofy(bool on);
+	// Обработка нажатий во время долгого прохода: Esc/закрытие окна прерывают
+	// ёфикацию (иначе окно выглядит зависшим).
+	bool pump_cancel();
 
 	// Панель вопросов ёфикации (аналог AskPanel оригинала): движок спрашивает
 	// про неоднозначное слово, панель показывает варианты и ждёт ответа
@@ -175,6 +181,16 @@ private:
 	char32_t pending_high_ = 0;
 	int wheel_accum_ = 0; // остаток дельты колеса (тачпады шлют меньше 120)
 	bool always_ask_ = false; // «спрашивать про все слова» (Yo/AlwaysAsk)
+	bool silent_yofy_ = false; // «без вопросов»
+	// Слова, про которые уже ответили «пропустить» в текущем проходе: повторно
+	// не спрашиваем. Иначе документ с частым словом даёт тысячи одинаковых
+	// вопросов — выглядит как зависание.
+	std::unordered_set<std::string> skipped_words_;
+	std::size_t ask_count_ = 0;	  // сколько вопросов задано в текущем проходе
+	bool yofy_busy_ = false;	  // проход идёт (для прогресса в статусе)
+	std::size_t yofy_line_ = 0;	  // текущая строка прохода
+	std::size_t yofy_lines_ = 0;  // сколько строк в проходе
+	bool cancel_requested_ = false;
 	bool quitting_ = false;	  // пришёл WM_QUIT: панель больше не ждёт ответа
 };
 

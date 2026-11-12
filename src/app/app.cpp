@@ -43,6 +43,7 @@ constexpr int kCmdFindNext = 1017;
 constexpr int kCmdYofify = 1030;
 constexpr int kCmdAlwaysAsk = 1031;
 constexpr int kCmdAskWord = 1032;
+constexpr int kCmdSilentYofy = 1033;
 
 // Кодировки и переводы строк: пункты-переключатели в меню.
 constexpr int kCmdEncCp1251 = 1040;
@@ -357,6 +358,7 @@ void App::setup_menu()
 	AppendMenuW(yofy, MF_STRING, kCmdYofify, L"&Ёфицировать\tCtrl+E");
 	AppendMenuW(yofy, MF_SEPARATOR, 0, nullptr);
 	AppendMenuW(yofy, MF_STRING, kCmdAskWord, L"Спросить про слово под &курсором\tCtrl+Shift+E");
+	AppendMenuW(yofy, MF_STRING, kCmdSilentYofy, L"&Без вопросов (неоднозначные пропускать)");
 	AppendMenuW(yofy, MF_STRING, kCmdAlwaysAsk, L"Спрашивать про &все слова");
 	AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(yofy), L"&Ёфикация");
 
@@ -527,6 +529,22 @@ std::wstring App::status_text() const
 	text += format_size(buf_->size());
 	if (readonly_)
 		text += L"   [только чтение]";
+	if (yofy_busy_)
+	{
+		text += L"   ёфикация: строка ";
+		text += std::to_wstring(yofy_line_ + 1);
+		if (yofy_lines_ > 0)
+		{
+			text += L" из ";
+			text += std::to_wstring(yofy_lines_);
+		}
+		if (ask_count_ > 0)
+		{
+			text += L", вопросов ";
+			text += std::to_wstring(ask_count_);
+		}
+		text += L"   Esc — прервать";
+	}
 	if (last_yofy_.rolled_back)
 		text += L"   ёфикация: откат, изменений нет";
 	else if (last_yofy_.lines > 0)
@@ -810,10 +828,10 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 
 void App::on_lbutton_down(float x, float y, bool extend)
 {
-	const float padding = renderer_.padding();
-	const float doc_x = x - padding + ed_->scroll_x();
-	const float doc_y = y - ed_->scroll_y();
-	ed_->click_at(doc_x, doc_y, extend);
+	// Экран → документ живёт в ядре (offset_at_client): при прокрутке
+	// прокрутку нужно ПРИБАВЛЯТЬ, иначе курсор встаёт выше клика на
+	// 2*scroll_y/lh строк и выделение «съезжает» на несколько строк.
+	ed_->set_caret(ed_->offset_at_client(x, y, renderer_.padding()), extend);
 	dragging_ = true;
 	SetCapture(hwnd_);
 	caret_on_ = true;
@@ -825,7 +843,7 @@ void App::on_mouse_move(float x, float y)
 {
 	if (!dragging_)
 		return;
-	ed_->click_at(x - renderer_.padding() + ed_->scroll_x(), y - ed_->scroll_y(), true);
+	ed_->set_caret(ed_->offset_at_client(x, y, renderer_.padding()), true);
 	update_scrollbars();
 	invalidate();
 }
@@ -1084,6 +1102,9 @@ void App::on_command(int id)
 	case kCmdAskWord:
 		ask_current_word();
 		break;
+	case kCmdSilentYofy:
+		set_silent_yofy(!silent_yofy_);
+		break;
 	default:
 		break;
 	}
@@ -1316,6 +1337,7 @@ bool App::ensure_yoficator()
 	// Неоднозначные слова — в панель вопросов (как AskPanel оригинала).
 	yofy_->set_ask([this](const AskRequest& req) { return ask_word(req); });
 	set_always_ask(always_ask_);
+	set_silent_yofy(silent_yofy_);
 	return true;
 }
 
@@ -1334,25 +1356,76 @@ void App::run_yofification()
 	if (from >= to)
 		return;
 
+	skipped_words_.clear();
+	ask_count_ = 0;
+	cancel_requested_ = false;
 	SetCursor(LoadCursorW(nullptr, IDC_WAIT));
 	sync_metrics();
 	yofy_->stats().reset();
-	ask_.line = buf_->line_of(from);
-	const auto yofy_started = std::chrono::steady_clock::now();
-	last_yofy_ = yofify_range(*buf_, from, to, *yofy_,
-							  [this](std::size_t line) { ask_.line = line; });
+
+	yofy_line_ = buf_->line_of(from);
+	yofy_lines_ = buf_->line_of(to - 1) + 1;
+	yofy_busy_ = true;
+	ask_.line = yofy_line_;
+
+	const auto started = std::chrono::steady_clock::now();
+	last_yofy_ = yofify_range(
+		*buf_, from, to, *yofy_,
+		[this](std::size_t line)
+		{
+			ask_.line = line;
+			yofy_line_ = line;
+			// Прогресс в статусе и живой интерфейс: без периодической
+			// перерисовки и обработки сообщений окно выглядит зависшим.
+			if (line % 32 == 0)
+				invalidate();
+		},
+		[this] { return pump_cancel(); });
+	yofy_busy_ = false;
 	trace("ёфикация", std::chrono::duration<double, std::milli>(
-						  std::chrono::steady_clock::now() - yofy_started).count(),
+						  std::chrono::steady_clock::now() - started).count(),
 		  to - from);
 	SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+
+	// Нажали «закрыть» посреди прохода — доводим закрытие до конца.
+	if (quitting_)
+	{
+		PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+		return;
+	}
 
 	if (last_yofy_.changed)
 	{
 		ed_->set_caret(std::min(from, buf_->size()));
-		update_scrollbars();
-		update_title();
+		refresh_view();
 	}
-	invalidate();
+	else
+	{
+		refresh_view();
+	}
+}
+
+bool App::pump_cancel()
+{
+	MSG msg{};
+	while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+	{
+		if (msg.message == WM_QUIT)
+			return true;
+		if (!ask_.active && msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE)
+			return true;
+		if (!ask_.active && msg.message == WM_CLOSE)
+		{
+			// Закрытие окна посреди ёфикации закрывает программу, а не
+			// «отвечает на вопрос»: иначе пользователь жмёт крестик, а
+			// вопросы продолжаются один за другим.
+			quitting_ = true;
+			return true;
+		}
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
+	return false;
 }
 
 // ---------------------------------------------------------------- панель вопросов
@@ -1370,6 +1443,26 @@ void App::set_always_ask(bool on)
 	}
 }
 
+void App::set_silent_yofy(bool on)
+{
+	silent_yofy_ = on;
+	if (const HMENU menu = GetMenu(hwnd_))
+		CheckMenuItem(menu, static_cast<UINT>(kCmdSilentYofy), MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+	if (yofy_)
+	{
+		if (on)
+		{
+			// Неоднозначные слова просто пропускаем: проход не встаёт на
+			// каждом. Отсутствующий обработчик движок понял бы как «прервать».
+			yofy_->set_ask([](const AskRequest&) { return AskAnswer::skip; });
+		}
+		else
+		{
+			yofy_->set_ask([this](const AskRequest& req) { return ask_word(req); });
+		}
+	}
+}
+
 void App::ask_build_view()
 {
 	ask_.rows.clear();
@@ -1379,7 +1472,13 @@ void App::ask_build_view()
 	RECT rc{};
 	GetClientRect(hwnd_, &rc);
 
-	const AskTexts texts = make_ask_texts(ask_.req);
+	AskTexts texts = make_ask_texts(ask_.req);
+	if (ask_count_ > 0)
+	{
+		texts.reason += "   (вопрос ";
+		texts.reason += std::to_string(ask_count_);
+		texts.reason += ", Esc — прервать)";
+	}
 	AskLayoutInput in;
 	in.client_w = static_cast<float>(std::max<LONG>(1, rc.right));
 	in.client_h = static_cast<float>(std::max<LONG>(1, rc.bottom));
@@ -1410,6 +1509,12 @@ void App::ask_build_view()
 	if (!layout.visible)
 		return;
 
+	// Панель ставим по центру текстовой области. Прижатая к низу, она терялась
+	// среди текста, а программа в это время ждала ответа — со стороны это
+	// выглядело как зависание.
+	const float area_h = std::max(1.0F, static_cast<float>(rc.bottom) - renderer_.status_height());
+	const float dy = std::max(0.0F, (area_h - layout.h) * 0.5F) - layout.y;
+
 	const float pad = std::max(2.0F, renderer_.padding());
 	const float left = layout.x + pad;
 	const float right = layout.x + layout.w - pad;
@@ -1418,7 +1523,7 @@ void App::ask_build_view()
 		AskRow row;
 		row.text = widen(layout.rows[i].text);
 		row.kind = i == 0 ? AskKind::normal : (i == 1 ? AskKind::accent : AskKind::dim);
-		row.rect = D2D1::RectF(left, layout.rows[i].y, right, layout.rows[i].y + layout.rows[i].h);
+		row.rect = D2D1::RectF(left, layout.rows[i].y + dy, right, layout.rows[i].y + dy + layout.rows[i].h);
 		ask_.rows.push_back(std::move(row));
 	}
 
@@ -1428,16 +1533,16 @@ void App::ask_build_view()
 		button.label = widen(box.label);
 		button.answer = to_answer(box.choice);
 		button.rect.left = static_cast<LONG>(box.x);
-		button.rect.top = static_cast<LONG>(box.y);
+		button.rect.top = static_cast<LONG>(box.y + dy);
 		button.rect.right = static_cast<LONG>(box.x + box.w);
-		button.rect.bottom = static_cast<LONG>(box.y + box.h);
+		button.rect.bottom = static_cast<LONG>(box.y + dy + box.h);
 		ask_.buttons.push_back(std::move(button));
 	}
 
 	ask_.panel.left = static_cast<LONG>(layout.x);
-	ask_.panel.top = static_cast<LONG>(layout.y);
+	ask_.panel.top = static_cast<LONG>(layout.y + dy);
 	ask_.panel.right = static_cast<LONG>(layout.x + layout.w);
-	ask_.panel.bottom = static_cast<LONG>(layout.y + layout.h);
+	ask_.panel.bottom = static_cast<LONG>(layout.y + dy + layout.h);
 	ask_.has_panel = true;
 }
 
@@ -1479,6 +1584,16 @@ AskAnswer App::ask_word(const AskRequest& req)
 {
 	if (quitting_)
 		return AskAnswer::cancel;
+
+	// Про это слово уже ответили «пропустить» в текущем проходе — не спрашиваем
+	// снова (иначе частые слова дают тысячи одинаковых панелей подряд).
+	const std::string key = encode_line(req.word1, Encoding::utf8) + "\x1f" +
+							encode_line(req.word2, Encoding::utf8);
+	if (!skipped_words_.empty() && skipped_words_.contains(key))
+		return AskAnswer::skip;
+
+	++ask_count_;
+	trace("вопрос", static_cast<double>(ask_count_));
 	ask_.req = req;
 	ask_.answered = false;
 	ask_.answer = AskAnswer::cancel;
@@ -1523,6 +1638,8 @@ AskAnswer App::ask_word(const AskRequest& req)
 	ask_.active = false;
 	ask_.has_panel = false;
 	ask_.answered = false;
+	if (ask_.answer == AskAnswer::skip)
+		skipped_words_.insert(key);
 	SetCursor(LoadCursorW(nullptr, IDC_WAIT));
 	invalidate();
 	return ask_.answer;
@@ -1775,6 +1892,8 @@ void App::ask_current_word()
 		return;
 	}
 
+	skipped_words_.clear();
+	ask_count_ = 0;
 	const bool saved_always_ask = always_ask_;
 	set_always_ask(true);
 	ask_.line = line_no;
@@ -1943,6 +2062,10 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		case WM_SYSCOMMAND:
 			return 0;
 		case WM_CLOSE:
+			// Крестик посреди ёфикации — это желание закрыть программу, а не
+			// «ответить на текущий вопрос». Прежнее поведение превращало
+			// закрытие в бесконечную череду вопросов.
+			quitting_ = true;
 			ask_answer(AskAnswer::cancel);
 			return 0;
 		default:
@@ -2016,8 +2139,7 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		// контекстное меню тогда относится к слову под мышью.
 		const float x = static_cast<float>(GET_X_LPARAM(lp));
 		const float y = static_cast<float>(GET_Y_LPARAM(lp));
-		const std::size_t hit = ed_->offset_at(x - renderer_.padding() + ed_->scroll_x(),
-											  y - ed_->scroll_y());
+		const std::size_t hit = ed_->offset_at_client(x, y, renderer_.padding());
 		if (!ed_->has_selection() || hit < ed_->sel_begin() || hit > ed_->sel_end())
 		{
 			ed_->set_caret(hit);

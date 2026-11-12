@@ -23,7 +23,7 @@ const UString* BufferLineSource::line(std::size_t index) const
 }
 
 YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
-						const YofyLineFn& on_line)
+						const YofyLineFn& on_line, const YofyCancelFn& cancel)
 {
 	YofyResult result;
 	if (buf.size() == 0 || from >= to)
@@ -45,6 +45,11 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 	{
 		if (on_line)
 			on_line(i);
+		if (cancel && cancel())
+		{
+			result.cancelled = true;
+			break;
+		}
 		const std::string_view bytes = buf.line_text(i);
 		const UString before = decode_line({ reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size() },
 										   Encoding::utf8);

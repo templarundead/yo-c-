@@ -110,6 +110,12 @@ public:
 	[[nodiscard]] float caret_y() const;
 	[[nodiscard]] float line_top(std::size_t line) const;
 	[[nodiscard]] std::size_t offset_at(float x, float y) const;
+	// Смещение под точкой клиента: экранные координаты → документ.
+	// Рендерер рисует строку i в line_top(i) - scroll_y, поэтому обратное
+	// преобразование прибавляет прокрутку (без этого курсор вставал выше
+	// клика на 2*scroll_y/lh строк — «выделение съезжало»).
+	[[nodiscard]] std::size_t offset_at_client(float screen_x, float screen_y,
+											  float padding_x = 0.0F) const;
 	// Ширина префикса строки до байта `byte_in_line` в пикселях.
 	[[nodiscard]] float prefix_width(std::size_t line, std::size_t byte_in_line) const;
 	// «Клетки» (символьные колонки) строки до байта byte_in_line.

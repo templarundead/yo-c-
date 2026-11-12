@@ -80,8 +80,13 @@ Editor::Editor(std::shared_ptr<TextBuffer> buffer) : buf_(std::move(buffer))
 
 void Editor::set_metrics(const Metrics& m) noexcept
 {
+	// Рендерер сообщает метрики на каждой перерисовке; пересчёт ширины
+	// (проход по видимым строкам) нужен только при их реальном изменении.
+	const bool changed = m.char_width != metrics_.char_width || m.line_height != metrics_.line_height ||
+						 m.tab_cells != metrics_.tab_cells || m.padding_x != metrics_.padding_x;
 	metrics_ = m;
-	width_dirty_ = true;
+	if (changed)
+		width_dirty_ = true;
 	// Геометрия изменилась — подрезаем прокрутку под новый размер строки, но
 	// курсор в окно НЕ тянем: рендерер вызывает set_metrics на каждой
 	// перерисовке, и прежнее поведение отменяло прокрутку колесом и полосой.
@@ -485,6 +490,11 @@ float Editor::caret_y() const { return line_top(buf_->line_of(caret_)); }
 float Editor::line_top(std::size_t line) const
 {
 	return static_cast<float>(line) * metrics_.line_height;
+}
+
+std::size_t Editor::offset_at_client(float screen_x, float screen_y, float padding_x) const
+{
+	return offset_at(screen_x - padding_x + scroll_x_, screen_y + scroll_y_);
 }
 
 std::size_t Editor::offset_at(float x, float y) const

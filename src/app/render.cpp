@@ -38,6 +38,11 @@ void Renderer::shutdown()
 		accent_brush_->Release();
 		accent_brush_ = nullptr;
 	}
+	if (dim_brush_ != nullptr)
+	{
+		dim_brush_->Release();
+		dim_brush_ = nullptr;
+	}
 	if (fmt_ != nullptr)
 	{
 		fmt_->Release();
@@ -197,6 +202,11 @@ bool Renderer::create_render_target(HWND hwnd)
 		accent_brush_->Release();
 		accent_brush_ = nullptr;
 	}
+	if (dim_brush_ != nullptr)
+	{
+		dim_brush_->Release();
+		dim_brush_ = nullptr;
+	}
 	// Кэш раскладок ссылается на кисти подсветки — сбрасываем его вместе
 	// с целевым буфером.
 	for (CachedLine& c : cache_)
@@ -220,6 +230,8 @@ bool Renderer::create_render_target(HWND hwnd)
 		return false;
 	if (FAILED(rt_->CreateSolidColorBrush(theme_.text, &brush_)))
 		return false;
+	if (FAILED(rt_->CreateSolidColorBrush(D2D1::ColorF(0.0F, 0.0F, 0.0F, 0.45F), &dim_brush_)))
+		dim_brush_ = nullptr;
 	return SUCCEEDED(rt_->CreateSolidColorBrush(theme_.accent, &accent_brush_));
 }
 
@@ -530,6 +542,10 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	}
 
 	rt_->PopAxisAlignedClip();
+
+	// Панель вопросов поверх затемнённого документа: видно, что ввод ждут.
+	if (ask != nullptr && dim_brush_ != nullptr)
+		rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, static_cast<float>(width_px_), text_h), dim_brush_);
 
 	if (show_find_bar)
 		draw_find_bar(find_text, find_focus);

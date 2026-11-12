@@ -221,3 +221,39 @@ TEST_CASE("ёфикация: пустой документ и пустой ди�
 	auto buf = tb("все еще\n");
 	CHECK_FALSE(yofify_range(*buf, 3, 3, e.yofy).changed);
 }
+
+TEST_CASE("ёфикация: внешняя отмена прекращает проход", "[yofytext]")
+{
+	Engine e;
+	// Текст без ё-неоднозначностей: проверяем именно механику отмены.
+	std::string text;
+	for (int i = 0; i < 500; ++i)
+		text += "строка без замен номер " + std::to_string(i) + "\n";
+	auto buf = tb(text);
+
+	std::size_t seen = 0;
+	const YofyResult r = yofify_range(
+		*buf, 0, buf->size(), e.yofy, [&](std::size_t) { ++seen; }, [&] { return seen >= 10; });
+
+	CHECK(r.cancelled);
+	CHECK_FALSE(r.rolled_back);
+	// Отмена приходит перед обработкой строки: девять строк обработано,
+	// на десятой проход остановился — а не прошёл все 500.
+	CHECK(r.lines == 9);
+	CHECK(seen == 10);
+}
+
+TEST_CASE("ёфикация: без отмены проход идёт до конца", "[yofytext]")
+{
+	Engine e;
+	std::string text;
+	for (int i = 0; i < 50; ++i)
+		text += "еще одна строка " + std::to_string(i) + "\n";
+	auto buf = tb(text);
+	std::size_t seen = 0;
+	const YofyResult r = yofify_range(
+		*buf, 0, buf->size(), e.yofy, [&](std::size_t) { ++seen; }, [&] { return false; });
+	CHECK_FALSE(r.cancelled);
+	CHECK(r.lines == 50);
+	CHECK(seen == 50);
+}

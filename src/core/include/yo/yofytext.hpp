@@ -43,10 +43,15 @@ struct YofyResult
 // Вызывается перед разбором каждой строки, до возможных вопросов движка.
 using YofyLineFn = std::function<void(std::size_t line)>;
 
+// Проверка «пора прекращать» — вызывается перед каждой строкой. GUI отдаёт
+// сюда обработку нажатий: без этого долгий проход нельзя ни прервать, ни
+// закрыть окно (окно выглядит зависшим).
+using YofyCancelFn = std::function<bool()>;
+
 // Ёфицировать строки, пересекающие [from, to), одной группой undo.
 // Ответы на вопросы движка задаются через Yoficator::set_ask у вызывающего.
 // Если пользователь выбрал «Откат», документ не меняется вовсе.
 YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yoficator& yofy,
-						const YofyLineFn& on_line = {});
+						const YofyLineFn& on_line = {}, const YofyCancelFn& cancel = {});
 
 } // namespace yo
