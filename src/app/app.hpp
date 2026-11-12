@@ -19,8 +19,11 @@
 #include <windows.h>
 #include <shellapi.h> // HDROP
 
+#include "yo/find.hpp"
+
 #include <filesystem>
 #include <memory>
+#include <utility>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -179,9 +182,36 @@ private:
 
 	void clipboard_copy(bool cut);
 	void clipboard_paste();
-	void find_toggle();
-	void find_next();
-	[[nodiscard]] std::size_t find_from(std::size_t from, const std::string& needle) const;
+
+	// --- поиск и замена (полоса внизу окна, как у RichEdit-диалогов) ---
+	void find_toggle(bool replace_row = false);
+	void find_close();
+	void find_next();			   // F3
+	void find_prev();			   // Shift+F3
+	void find_run(bool forward);   // находит и выделяет
+	void find_replace();		   // «Заменить» (одно совпадение)
+	void find_replace_all();	   // «Заменить всё» одной группой undo
+	void find_add_text(const std::string& utf8);
+	void find_backspace();
+	void find_toggle_case();
+	void find_toggle_word();
+	void find_sync_view();   // геометрия полосы + подсветка видимых совпадений
+	void find_collect_marks();
+	void find_count_hits();
+	[[nodiscard]] bool find_click(float x, float y);
+	[[nodiscard]] bool find_mouse_move(float x, float y);
+	[[nodiscard]] bool find_char(wchar_t ch);
+	[[nodiscard]] bool find_key(WPARAM vk, bool ctrl, bool shift);
+
+	// --- прочее из меню оригинала ---
+	void toggle_line_numbers();
+	void show_about();
+	void show_file_props();
+	// Переход по сделанным заменам (Ctrl+W / Ctrl+Q, как FindyyFwd/FindyyBack).
+	void yofy_goto(bool forward);
+	void clear_yofy_marks();
+	// Подсветка ёфикационных замен в диапазоне (как Mark оригинала).
+	void mark_yofy_changes(std::size_t from, std::size_t to);
 
 	void set_document(std::shared_ptr<TextBuffer> buf, const std::filesystem::path& path, Encoding enc,
 					  bool bom);
@@ -217,7 +247,22 @@ private:
 	bool caret_on_ = true;
 	bool dragging_ = false;
 	bool show_find_ = false;
+	bool find_replace_row_ = false; // вторая строка полосы (Ctrl+H)
 	std::string find_query_;
+	std::string find_replace_text_;
+	int find_focus_ = 0;			// 0 — образец, 1 — замена
+	yo::FindOptions find_opts_{};
+	bool find_regex_ = false;		// Ctrl+Shift+R: образец — регулярное выражение
+	std::size_t find_total_ = 0;	// сколько совпадений в документе
+	std::size_t find_index_ = 0;	// номер текущего (1-based), 0 — нет
+	std::wstring find_error_;		// ошибка разбора РВ
+	FindBarView find_view_{};		// готовая раскладка полосы (клики и рисование)
+	std::vector<std::pair<std::size_t, std::size_t>> find_marks_;
+	std::vector<std::size_t> find_hits_; // все совпадения (для «N из M»)
+	// Замены текущего/последнего прохода: по ним ходят Ctrl+W / Ctrl+Q.
+	std::vector<std::pair<std::size_t, std::size_t>> yofy_marks_;
+	std::size_t yofy_mark_index_ = 0;
+	bool show_numbers_ = false;
 	char32_t pending_high_ = 0;
 	int wheel_accum_ = 0; // остаток дельты колеса (тачпады шлют меньше 120)
 	// --- настройки (yo.ini рядом с exe, как у оригинала) ---

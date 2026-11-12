@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace yo::gui {
@@ -39,6 +40,31 @@ struct AskRow
 	bool has_hot = false;
 	std::size_t hot_from = 0;
 	std::size_t hot_to = 0;
+};
+
+// Полоса поиска и замены: поля ввода и кнопки (геометрию считает App,
+// чтобы клики и рисование совпадали).
+struct FindBarButtonView
+{
+	D2D1_RECT_F rect{};
+	std::wstring label;
+	int id = 0;
+	bool hot = false;
+	bool checked = false; // «Aa» и «Слово» — включённые режимы
+	bool toggle = false;
+};
+
+struct FindBarView
+{
+	D2D1_RECT_F rect{};
+	D2D1_RECT_F query_rect{};
+	D2D1_RECT_F replace_rect{};
+	std::wstring query;
+	std::wstring replace;
+	int focus = 0;		// 0 — образец, 1 — замена
+	bool replace_mode = false;
+	float h = 0.0F;
+	std::vector<FindBarButtonView> buttons;
 };
 
 // Тон кнопки панели: «Е» — синяя, «Ё» — зелёная, остальные — системные.
@@ -143,6 +169,13 @@ public:
 	// Высота нижней полосы (статус + строка поиска) в пикселях.
 	[[nodiscard]] float status_height() const noexcept;
 	[[nodiscard]] float find_height() const noexcept;
+	[[nodiscard]] float width_dip() const noexcept { return width_dip_; }
+	[[nodiscard]] float height_dip() const noexcept { return height_dip_; }
+
+	// Поле номера строки слева от текста (0 — выключено) и левый край текста.
+	void set_gutter_width(float w) noexcept { gutter_w_ = std::max(0.0F, w); }
+	[[nodiscard]] float gutter_width() const noexcept { return gutter_w_; }
+	[[nodiscard]] float text_x0() const noexcept { return padding_ + gutter_w_; }
 
 	// Ширина строки шрифтом интерфейса (Segoe UI) в пикселях — для кнопок.
 	[[nodiscard]] float measure_ui(const std::wstring& text);
@@ -150,10 +183,12 @@ public:
 	[[nodiscard]] float measure_ask(const std::wstring& text);
 
 	// Полная перерисовка. `caret` — рисовать ли курсор (мигание),
-	// `ask` — панель вопросов ёфикации поверх текста.
-	void paint(Editor& ed, const std::wstring& status, bool show_find_bar,
-			   const std::wstring& find_text, bool find_focus, bool caret,
-			   const AskView* ask = nullptr, const MenuBarView* bar = nullptr);
+	// `ask` — панель вопросов ёфикации поверх текста, `find` — полоса
+	// поиска/замены, `marks` — подсвеченные совпадения (смещения в тексте).
+	void paint(Editor& ed, const std::wstring& status, const FindBarView* find, bool caret,
+			   const AskView* ask = nullptr, const MenuBarView* bar = nullptr,
+			   const std::vector<std::pair<std::size_t, std::size_t>>& marks = {},
+			   const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks = {});
 
 	[[nodiscard]] float text_area_width() const noexcept;
 	[[nodiscard]] float text_area_height() const noexcept;
@@ -169,7 +204,9 @@ private:
 	bool measure_font(HWND hwnd);
 	bool create_render_target(HWND hwnd);
 	void draw_status(const std::wstring& status);
-	void draw_find_bar(const std::wstring& text, bool focus);
+	void draw_find_bar(const FindBarView& view);
+	void draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
+					const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color);
 	void draw_ask(const AskView& view);
 	void draw_menu_bar(const MenuBarView& bar);
 	void draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, float text_h,
@@ -182,6 +219,7 @@ private:
 	IDWriteTextFormat* fmt_ = nullptr;		// основной текст
 	IDWriteTextFormat* fmt_ui_ = nullptr;	// статус/поиск/меню
 	IDWriteTextFormat* fmt_center_ = nullptr; // панель вопросов: по центру
+	IDWriteTextFormat* fmt_right_ = nullptr;  // номера строк: по правому краю
 	IDWriteTextFormat* fmt_ask_ = nullptr;	  // панель вопросов: по левому краю
 	ID2D1SolidColorBrush* brush_ = nullptr;
 	ID2D1SolidColorBrush* accent_brush_ = nullptr; // подсветка ё
@@ -196,6 +234,7 @@ private:
 	float line_h_ = 18.0F;
 	float status_h_ = 20.0F;
 	float find_h_ = 26.0F;
+	float gutter_w_ = 0.0F;
 	float padding_ = 6.0F;
 	float bar_h_ = 26.0F;
 	float ui_line_h_ = 16.0F;  // высота строки шрифта интерфейса

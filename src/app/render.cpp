@@ -63,6 +63,11 @@ void Renderer::shutdown()
 		fmt_ask_->Release();
 		fmt_ask_ = nullptr;
 	}
+	if (fmt_right_ != nullptr)
+	{
+		fmt_right_->Release();
+		fmt_right_ = nullptr;
+	}
 	if (rt_ != nullptr)
 	{
 		rt_->Release();
@@ -139,6 +144,11 @@ bool Renderer::measure_font(HWND hwnd)
 		fmt_ask_->Release();
 		fmt_ask_ = nullptr;
 	}
+	if (fmt_right_ != nullptr)
+	{
+		fmt_right_->Release();
+		fmt_right_ = nullptr;
+	}
 	// Моноширинный шрифт: Cascadia Mono есть в Windows 11/10 (Terminal),
 	// Consolas — надёжный запасной вариант, дальше DirectWrite сам подберёт.
 	const wchar_t* families[] = { L"Cascadia Mono", L"Consolas", L"Courier New" };
@@ -163,6 +173,14 @@ bool Renderer::measure_font(HWND hwnd)
 	fmt_ui_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 	fmt_ui_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
 	fmt_ui_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+	// Номера строк — тем же размером, по правому краю поля.
+	if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+										DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0F,
+										L"ru-ru", &fmt_right_)))
+		return false;
+	fmt_right_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+	fmt_right_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+	fmt_right_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
 	// Панель вопросов: подписи и строки по центру, как в оригинале. Шрифт
 	// панели — не меньше, чем текст окна по умолчанию (15 DIP), и не зависит
@@ -323,7 +341,7 @@ float Renderer::find_height() const noexcept { return find_h_; }
 
 float Renderer::text_area_width() const noexcept
 {
-	return std::max(0.0F, width_dip_ - 2.0F * padding_);
+	return std::max(0.0F, width_dip_ - 2.0F * padding_ - gutter_w_);
 }
 
 float Renderer::text_area_height() const noexcept
@@ -353,24 +371,96 @@ void Renderer::draw_status(const std::wstring& status)
 				   D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
-void Renderer::draw_find_bar(const std::wstring& text, bool focus)
+void Renderer::draw_find_bar(const FindBarView& view)
 {
 	if (rt_ == nullptr || fmt_ui_ == nullptr || brush_ == nullptr)
 		return;
-	const float top = height_dip_ - status_h_ - find_h_;
 	brush_->SetColor(theme_.gutter);
-	rt_->FillRectangle(D2D1::RectF(0.0F, top, width_dip_, top + find_h_), brush_);
-	brush_->SetColor(focus ? theme_.accent : theme_.status_fg);
-	rt_->DrawRectangle(
-		D2D1::RectF(padding_ - 2.0F, top + 2.0F, width_dip_ - padding_ + 2.0F,
-					top + find_h_ - 2.0F),
-		brush_, 1.0F);
-	brush_->SetColor(theme_.text);
-	const std::wstring line = L"Найти: " + text;
-	rt_->DrawTextW(line.c_str(), static_cast<UINT32>(line.size()), fmt_ui_,
-				   D2D1::RectF(padding_ + 2.0F, top + 2.0F, width_dip_ - padding_,
-							   top + find_h_ - 2.0F),
-				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	rt_->FillRectangle(view.rect, brush_);
+	brush_->SetColor(D2D1::ColorF(0.05F, 0.05F, 0.06F));
+	rt_->FillRectangle(D2D1::RectF(view.rect.left, view.rect.top, view.rect.right, view.rect.top + 1.0F),
+					   brush_);
+
+	const auto draw_field = [&](const D2D1_RECT_F& rect, const std::wstring& value, bool active, bool replace_field)
+	{
+		brush_->SetColor(active ? theme_.accent : theme_.status_fg);
+		rt_->DrawRectangle(rect, brush_, 1.0F);
+		if (!value.empty())
+		{
+			brush_->SetColor(theme_.text);
+			rt_->DrawTextW(value.c_str(), static_cast<UINT32>(value.size()), fmt_ui_,
+						   D2D1::RectF(rect.left + 4.0F, rect.top, rect.right - 4.0F, rect.bottom), brush_,
+						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		}
+		else
+		{
+			// Подсказка в пустом поле — чтобы было понятно, куда вводить.
+			brush_->SetColor(theme_.status_fg);
+			const std::wstring hint = replace_field ? L"на что заменить" : L"что найти";
+			rt_->DrawTextW(hint.c_str(), static_cast<UINT32>(hint.size()), fmt_ui_,
+						   D2D1::RectF(rect.left + 4.0F, rect.top, rect.right - 4.0F, rect.bottom), brush_,
+						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		}
+		if (active)
+		{
+			// Курсор ввода: видно, куда попадёт набранное.
+			brush_->SetColor(theme_.text);
+			const float x = rect.left + 4.0F + measure_ui(value);
+			rt_->FillRectangle(D2D1::RectF(x, rect.top + 2.0F, x + std::max(1.0F, dpi_scale_),
+										  rect.bottom - 2.0F),
+							   brush_);
+		}
+	};
+
+	draw_field(view.query_rect, view.query, view.focus == 0, false);
+	if (view.replace_mode)
+		draw_field(view.replace_rect, view.replace, view.focus == 1, true);
+
+	for (const FindBarButtonView& b : view.buttons)
+	{
+		const bool lit = b.hot || (b.toggle && b.checked);
+		brush_->SetColor(lit ? theme_.selection : theme_.status_bg);
+		rt_->FillRectangle(b.rect, brush_);
+		brush_->SetColor(lit ? theme_.accent : theme_.gutter);
+		rt_->DrawRectangle(b.rect, brush_, 1.0F);
+		brush_->SetColor(lit ? theme_.text : theme_.status_fg);
+		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_, b.rect, brush_,
+					   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+
+}
+
+// Подсветка найденных совпадений: жёлтая заливка под текстом.
+void Renderer::draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
+						  const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color)
+{
+	if (rt_ == nullptr || brush_ == nullptr || marks.empty())
+		return;
+	const float lh = std::max(1.0F, ed.metrics().line_height);
+	const std::size_t first = ed.first_visible_line();
+	const std::size_t count = ed.visible_line_count();
+	brush_->SetColor(color);
+	for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+	{
+		const std::size_t line_start = ed.buffer().line_start(i);
+		const std::size_t line_len = ed.buffer().line_text(i).size();
+		const std::size_t line_end = line_start + line_len;
+		const float y = bar_h_ + ed.line_top(i) - scroll_y;
+		if (y + lh < bar_h_ || y > bar_h_ + text_h)
+			continue;
+		for (const auto& [from, to] : marks)
+		{
+			if (to <= line_start || from >= line_end)
+				continue;
+			const std::size_t a = from > line_start ? from - line_start : 0;
+			const std::size_t b = std::min(to - line_start, line_len);
+			if (b <= a)
+				continue;
+			const float x1 = text_x0() + ed.prefix_width(i, a) - scroll_x;
+			const float x2 = text_x0() + ed.prefix_width(i, b) - scroll_x;
+			rt_->FillRectangle(D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F), brush_);
+		}
+	}
 }
 
 float Renderer::measure_ask(const std::wstring& text)
@@ -422,8 +512,8 @@ void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, f
 		const std::size_t b = std::min(to - line_start, line_len);
 		if (b <= a)
 			continue;
-		const float x1 = padding_ + ed.prefix_width(i, a) - scroll_x;
-		const float x2 = padding_ + ed.prefix_width(i, b) - scroll_x;
+		const float x1 = text_x0() + ed.prefix_width(i, a) - scroll_x;
+		const float x2 = text_x0() + ed.prefix_width(i, b) - scroll_x;
 		const float y = bar_h_ + ed.line_top(i) - scroll_y;
 		if (y + lh < bar_h_ || y > bar_h_ + text_h)
 			continue;
@@ -613,9 +703,10 @@ void Renderer::draw_ask(const AskView& view)
 	}
 }
 
-void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
-					 const std::wstring& find_text, bool find_focus, bool caret,
-					 const AskView* ask, const MenuBarView* bar)
+void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* find, bool caret,
+					 const AskView* ask, const MenuBarView* bar,
+					 const std::vector<std::pair<std::size_t, std::size_t>>& marks,
+					 const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks)
 {
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
@@ -628,8 +719,9 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 
 	// Полоса вопросов внизу отнимает место у текста, как и строка поиска.
 	const float ask_inset = ask != nullptr ? ask->bottom_inset : 0.0F;
+	const float find_inset = find != nullptr ? find->h : 0.0F;
 	const float text_h = std::max(
-		0.0F, height_dip_ - bar_h_ - status_h_ - (show_find_bar ? find_h_ : 0.0F) - ask_inset);
+		0.0F, height_dip_ - bar_h_ - status_h_ - find_inset - ask_inset);
 	const float text_y0 = bar_h_;
 	ed.set_viewport(text_area_width(), text_h);
 
@@ -640,6 +732,11 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 
 	const std::size_t first = ed.first_visible_line();
 	const std::size_t count = ed.visible_line_count();
+
+	// Подсветка ёфикационных замен (как Mark оригинала) и найденного —
+	// под выделением и под текстом.
+	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, D2D1::ColorF(0.25F, 0.75F, 0.35F, 0.30F));
+	draw_marks(ed, scroll_x, scroll_y, text_h, marks, D2D1::ColorF(0.95F, 0.80F, 0.20F, 0.35F));
 
 	// Полоса выделения рисуется под текстом.
 	if (ed.has_selection())
@@ -656,16 +753,16 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 				continue;
 			const std::size_t from = sel_a > line_start ? sel_a - line_start : 0;
 			const std::size_t to = std::min(sel_b - line_start, line_len);
-			float x1 = padding_ + ed.prefix_width(i, from) - scroll_x;
-			float x2 = padding_ + ed.prefix_width(i, to) - scroll_x;
+			float x1 = text_x0() + ed.prefix_width(i, from) - scroll_x;
+			float x2 = text_x0() + ed.prefix_width(i, to) - scroll_x;
 			if (sel_b > line_end && to == line_len)
 				x2 += cw * 0.5F; // выделение «через» перевод строки видно
-			if (x2 < padding_ - scroll_x)
-				x2 = padding_ - scroll_x;
+			if (x2 < text_x0() - scroll_x)
+				x2 = text_x0() - scroll_x;
 			if (x1 > width_dip_)
 				continue;
 			const float y = text_y0 + ed.line_top(i) - scroll_y;
-			rt_->FillRectangle(D2D1::RectF(std::max(x1, padding_ - scroll_x), y + 1.0F,
+			rt_->FillRectangle(D2D1::RectF(std::max(x1, text_x0() - scroll_x), y + 1.0F,
 										   std::max(x2, x1 + 1.0F), y + lh - 1.0F),
 							   brush_);
 		}
@@ -673,6 +770,22 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 
 	rt_->PushAxisAlignedClip(D2D1::RectF(0.0F, text_y0, width_dip_, text_y0 + text_h),
 							 D2D1_ANTIALIAS_MODE_ALIASED);
+
+	// Номера строк: поле слева, выключено по умолчанию (Ctrl+L в меню «Вид»).
+	if (gutter_w_ > 0.0F && fmt_ui_ != nullptr)
+	{
+		brush_->SetColor(theme_.status_fg);
+		for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+		{
+			const float line_y = text_y0 + ed.line_top(i) - scroll_y;
+			if (line_y > text_y0 + text_h || line_y + lh < text_y0)
+				continue;
+			const std::wstring num = std::to_wstring(i + 1);
+			rt_->DrawTextW(num.c_str(), static_cast<UINT32>(num.size()), fmt_right_, 
+						   D2D1::RectF(0.0F, line_y, text_x0() - 4.0F, line_y + lh), brush_,
+						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		}
+	}
 
 	// Текст видимых строк: раскладки кэшируются по номеру строки и тексту.
 	for (CachedLine& c : cache_)
@@ -778,7 +891,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 			continue;
 		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
 		const float slice_x = ed.prefix_width(i, from_byte);
-		rt_->DrawTextLayout(D2D1::Point2F(padding_ + slice_x - scroll_x, line_y), slot->layout, brush_,
+		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + slice_x - scroll_x, line_y), slot->layout, brush_,
 							D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
 	// Лишние раскладки выбрасываем, чтобы кэш не рос.
@@ -799,7 +912,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	// Курсор.
 	if (caret)
 	{
-		const float x = padding_ + ed.caret_x() - scroll_x;
+		const float x = text_x0() + ed.caret_x() - scroll_x;
 		const float y = text_y0 + ed.caret_y() - scroll_y;
 		brush_->SetColor(theme_.caret);
 		rt_->FillRectangle(D2D1::RectF(x, y + 1.0F, x + std::max(1.0F, dpi_scale_), y + lh - 1.0F), brush_);
@@ -816,8 +929,8 @@ void Renderer::paint(Editor& ed, const std::wstring& status, bool show_find_bar,
 	if (ask != nullptr && ask->has_word)
 		draw_word_highlight(ed, scroll_x, scroll_y, text_h, ask->word_from, ask->word_to);
 
-	if (show_find_bar)
-		draw_find_bar(find_text, find_focus);
+	if (find != nullptr)
+		draw_find_bar(*find);
 	draw_status(status);
 	if (ask != nullptr)
 		draw_ask(*ask);

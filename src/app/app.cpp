@@ -60,6 +60,16 @@ constexpr int kCmdEolCrlf = 1051;
 constexpr int kCmdEolCr = 1052;
 constexpr int kCmdFontBigger = 1020;
 constexpr int kCmdFontSmaller = 1021;
+constexpr int kCmdFontReset = 1022;
+constexpr int kCmdFindPrev = 1018;
+constexpr int kCmdReplace = 1019;
+constexpr int kCmdFindRegex = 1023;
+constexpr int kCmdFileProp = 1024;
+constexpr int kCmdLineNumbers = 1025;
+constexpr int kCmdAbout = 1026;
+constexpr int kCmdYofyNext = 1034;
+constexpr int kCmdYofyPrev = 1035;
+constexpr int kCmdClearMarks = 1036;
 
 constexpr UINT_PTR kCaretTimer = 1;
 constexpr int kDefaultWidth = 1000;
@@ -563,6 +573,8 @@ void App::build_menus()
 		{ L"Сохранить\tCtrl+S", kCmdSave },
 		{ L"Сохранить как…\tCtrl+Shift+S", kCmdSaveAs },
 		{ L"", 0, true },
+		{ L"Свойства файла…\tCtrl+P", kCmdFileProp },
+		{ L"", 0, true },
 		{ L"Выход\tAlt+F4", kCmdExit },
 	};
 	menus_.push_back(std::move(file));
@@ -580,7 +592,10 @@ void App::build_menus()
 		{ L"Выделить всё\tCtrl+A", kCmdSelectAll },
 		{ L"", 0, true },
 		{ L"Найти…\tCtrl+F", kCmdFind },
+		{ L"Заменить…\tCtrl+H", kCmdReplace },
 		{ L"Найти далее\tF3", kCmdFindNext },
+		{ L"Найти назад\tShift+F3", kCmdFindPrev },
+		{ L"Найти по образцу (РВ)…\tCtrl+Shift+R", kCmdFindRegex },
 	};
 	menus_.push_back(std::move(edit));
 
@@ -592,6 +607,10 @@ void App::build_menus()
 		{ L"Без вопросов", kCmdSilentYofy },
 		{ L"", 0, true },
 		{ L"Спрашивать про все слова", kCmdAlwaysAsk },
+		{ L"", 0, true },
+		{ L"Найти замену вперёд\tCtrl+W", kCmdYofyNext },
+		{ L"Найти замену назад\tCtrl+Q", kCmdYofyPrev },
+		{ L"Убрать подсветку замен\tShift+F10", kCmdClearMarks },
 	};
 	menus_.push_back(std::move(yofy));
 
@@ -620,8 +639,18 @@ void App::build_menus()
 	view.entries = {
 		{ L"Крупнее\tCtrl++", kCmdFontBigger },
 		{ L"Мельче\tCtrl+-", kCmdFontSmaller },
+		{ L"Обычный размер\tCtrl+0", kCmdFontReset },
+		{ L"", 0, true },
+		{ L"Номера строк\tCtrl+Shift+L", kCmdLineNumbers },
 	};
 	menus_.push_back(std::move(view));
+
+	MenuDef help;
+	help.title = L"Помощь";
+	help.entries = {
+		{ L"О программе\tF1", kCmdAbout },
+	};
+	menus_.push_back(std::move(help));
 
 	layout_menus();
 }
@@ -882,6 +911,17 @@ void App::setup_accels()
 		{ FCONTROL | FVIRTKEY, 'E', kCmdYofify },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'E', kCmdAskWord },
 		{ FVIRTKEY, VK_F3, kCmdFindNext },
+		{ FSHIFT | FVIRTKEY, VK_F3, kCmdFindPrev },
+		{ FCONTROL | FVIRTKEY, 'H', kCmdReplace },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'R', kCmdFindRegex },
+		{ FCONTROL | FVIRTKEY, 'W', kCmdYofyNext },
+		{ FCONTROL | FVIRTKEY, 'Q', kCmdYofyPrev },
+		{ FSHIFT | FVIRTKEY, VK_F10, kCmdClearMarks },
+		{ FCONTROL | FVIRTKEY, '0', kCmdFontReset },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'L', kCmdLineNumbers },
+		{ FCONTROL | FVIRTKEY, 'P', kCmdFileProp },
+		{ FCONTROL | FVIRTKEY, 'L', kCmdOpen },
+		{ FVIRTKEY, VK_F1, kCmdAbout },
 		{ FCONTROL | FVIRTKEY, VK_OEM_PLUS, kCmdFontBigger },
 		{ FCONTROL | FVIRTKEY, VK_OEM_MINUS, kCmdFontSmaller },
 	};
@@ -946,6 +986,9 @@ void App::update_menu_checks()
 				break;
 			case kCmdSilentYofy:
 				e.checked = silent_yofy_;
+				break;
+			case kCmdLineNumbers:
+				e.checked = show_numbers_;
 				break;
 			default:
 				break;
@@ -1068,8 +1111,23 @@ std::wstring App::status_text() const
 		if (last_yofy_.cancelled)
 			text += L" (прервано)";
 	}
-	if (show_find_ && find_query_.empty())
-		text += L"   введите образец, Enter — найти, Esc — закрыть";
+	if (show_find_)
+	{
+		text += L"   поиск";
+		if (find_regex_)
+			text += L" (РВ)";
+		text += L": ";
+		if (!find_error_.empty())
+			text += find_error_;
+		else if (find_query_.empty())
+			text += L"введите образец, Enter — найти, Esc — закрыть";
+		else
+		{
+			text += std::to_wstring(find_index_);
+			text += L" из ";
+			text += std::to_wstring(find_total_);
+		}
+	}
 	return text;
 }
 
@@ -1085,9 +1143,10 @@ void App::on_paint()
 	sync_metrics();
 	const AskView view = ask_view();
 	MenuBarView bar_view = menu_bar_view();
+	find_sync_view();
 	const auto paint_started = std::chrono::steady_clock::now();
-	renderer_.paint(*ed_, status_text(), show_find_, widen(find_query_), true, caret_on_,
-					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view);
+	renderer_.paint(*ed_, status_text(), show_find_ ? &find_view_ : nullptr, caret_on_,
+					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view, find_marks_, yofy_marks_);
 	const double paint_ms =
 		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paint_started).count();
 	if (paint_ms > 16.0)
@@ -1158,20 +1217,8 @@ void App::on_char(wchar_t ch)
 	}
 	pending_high_ = 0;
 
-	if (show_find_)
-	{
-		if (ch == L'\r' || ch == L'\n')
-		{
-			find_next();
-			return;
-		}
-		if (ch >= 0x20)
-		{
-			find_query_ += utf16_to_utf8(std::u16string(1, static_cast<char16_t>(ch)));
-			invalidate();
-		}
+	if (find_char(ch))
 		return;
-	}
 
 	if (ch == L'\r' || ch == L'\n')
 	{
@@ -1198,34 +1245,8 @@ void App::on_char(wchar_t ch)
 
 void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 {
-	if (show_find_)
-	{
-		if (vk == VK_ESCAPE)
-		{
-			find_toggle();
-			return;
-		}
-		if (vk == VK_RETURN)
-		{
-			find_next();
-			return;
-		}
-		if (vk == VK_BACK)
-		{
-			// Удаляем последний символ UTF-8 образца.
-			std::size_t cut = find_query_.size();
-			while (cut > 0 && (static_cast<unsigned char>(find_query_[cut - 1]) & 0xC0U) == 0x80U)
-				--cut;
-			if (cut > 0)
-				--cut;
-			find_query_.erase(cut);
-			invalidate();
-			return;
-		}
-		if (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN || vk == VK_HOME ||
-			vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_DELETE)
-			return;
-	}
+	if (find_key(vk, ctrl, shift))
+		return;
 	// Сочетания обрабатываем и здесь, а не только через таблицу акселераторов:
 	// TranslateAccelerator легко «теряет» нажатия (например, когда фокус у
 	// диалога или таблица не создалась), и тогда Ctrl+C/V/Z молча не работают.
@@ -1348,6 +1369,9 @@ std::size_t App::caret_offset_at(float x, float y) const
 
 void App::on_lbutton_down(float x, float y, bool extend)
 {
+	if (show_find_)
+		find_focus_ = -1; // печать снова идёт в документ
+
 	// Экран → документ живёт в ядре (offset_at_client): при прокрутке
 	// прокрутку нужно ПРИБАВЛЯТЬ, иначе курсор встаёт выше клика на
 	// 2*scroll_y/lh строк и выделение «съезжает» на несколько строк.
@@ -1523,6 +1547,8 @@ void App::on_context_menu(int x, int y)
 	AppendMenuW(menu, MF_STRING, kCmdAskWord, L"Спросить про слово под курсором");
 	AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 	AppendMenuW(menu, MF_STRING, kCmdFind, L"Найти…\tCtrl+F");
+	AppendMenuW(menu, MF_STRING, kCmdReplace, L"Заменить…\tCtrl+H");
+	AppendMenuW(menu, MF_STRING, kCmdFindNext, L"Найти далее\tF3");
 
 	SetForegroundWindow(hwnd_); // иначе меню не закрывается по клику мимо
 	TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, hwnd_,
@@ -1571,10 +1597,49 @@ void App::on_command(int id)
 		invalidate();
 		break;
 	case kCmdFind:
-		find_toggle();
+		find_toggle(false);
+		break;
+	case kCmdReplace:
+		find_toggle(true);
 		break;
 	case kCmdFindNext:
 		find_next();
+		break;
+	case kCmdFindPrev:
+		find_prev();
+		break;
+	case kCmdFindRegex:
+		find_regex_ = true;
+		if (!show_find_)
+			find_toggle(false);
+		find_sync_view();
+		invalidate();
+		break;
+	case kCmdYofyNext:
+		yofy_goto(true);
+		break;
+	case kCmdYofyPrev:
+		yofy_goto(false);
+		break;
+	case kCmdClearMarks:
+		clear_yofy_marks();
+		break;
+	case kCmdLineNumbers:
+		toggle_line_numbers();
+		break;
+	case kCmdFileProp:
+		show_file_props();
+		break;
+	case kCmdAbout:
+		show_about();
+		break;
+	case kCmdFontReset:
+		if (renderer_.set_font_size(15.0F, hwnd_))
+		{
+			font_size_ = renderer_.font_size();
+			save_settings();
+			refresh_view();
+		}
 		break;
 	case kCmdYofify:
 		run_yofification();
@@ -1743,53 +1808,727 @@ void App::clipboard_paste()
 
 // ---------------------------------------------------------------- поиск
 
-void App::find_toggle()
+namespace {
+
+// Идентификаторы кнопок полосы поиска (клик и отрисовка идут по ним).
+constexpr int kFindBtnNext = 1;
+constexpr int kFindBtnPrev = 2;
+constexpr int kFindBtnCase = 3;
+constexpr int kFindBtnWord = 4;
+constexpr int kFindBtnClose = 5;
+constexpr int kFindBtnReplace = 6;
+constexpr int kFindBtnReplaceAll = 7;
+
+constexpr std::size_t kFindCountLimit = 100000; // больше не считаем — незачем
+
+} // namespace
+
+void App::find_toggle(bool replace_row)
 {
-	show_find_ = !show_find_;
+	if (show_find_ && (!replace_row || find_replace_row_))
+	{
+		find_close();
+		return;
+	}
+	show_find_ = true;
+	if (replace_row)
+		find_replace_row_ = true;
+	find_focus_ = replace_row ? 1 : 0;
+	// Образец из выделения — привычно: выделили слово, нажали Ctrl+F.
+	if (find_query_.empty() && ed_ != nullptr && ed_->has_selection())
+	{
+		const std::size_t len = ed_->sel_end() - ed_->sel_begin();
+		if (len > 0 && len < 200)
+		{
+			std::string text;
+			buf_->read(ed_->sel_begin(), len, text);
+			if (text.find('\n') == std::string::npos)
+				find_query_ = text;
+		}
+	}
+	find_sync_view();
 	invalidate();
 }
 
-std::size_t App::find_from(std::size_t from, const std::string& needle) const
+void App::find_close()
 {
-	if (needle.empty() || from >= buf_->size())
-		return std::string::npos;
-	const std::size_t chunk = 1U << 16;
-	const std::size_t overlap = needle.size() > 1 ? needle.size() - 1 : 0;
-	std::string window;
-	std::size_t pos = from;
-	while (pos < buf_->size())
-	{
-		const std::size_t take = std::min(chunk, buf_->size() - pos);
-		buf_->read(pos, take, window);
-		const std::size_t hit = window.find(needle);
-		if (hit != std::string::npos)
-			return pos + hit;
-		if (pos + take >= buf_->size())
-			break;
-		// Сдвиг с перекрытием: образец может лежать на границе кусков.
-		pos += take - std::min(overlap, take);
-	}
-	return std::string::npos;
+	show_find_ = false;
+	find_replace_row_ = false;
+	find_focus_ = 0;
+	find_marks_.clear();
+	find_hits_.clear();
+	find_error_.clear();
+	find_view_ = {};
+	find_sync_view();
+	invalidate();
 }
 
-void App::find_next()
+void App::find_toggle_case()
+{
+	find_opts_.case_sensitive = !find_opts_.case_sensitive;
+	find_count_hits();
+	find_sync_view();
+	invalidate();
+}
+
+void App::find_toggle_word()
+{
+	find_opts_.whole_word = !find_opts_.whole_word;
+	find_count_hits();
+	find_sync_view();
+	invalidate();
+}
+
+void App::find_add_text(const std::string& utf8)
+{
+	std::string& field = find_focus_ == 1 && find_replace_row_ ? find_replace_text_ : find_query_;
+	field += utf8;
+	find_count_hits();
+	find_sync_view();
+	invalidate();
+}
+
+void App::find_backspace()
+{
+	std::string& field = find_focus_ == 1 && find_replace_row_ ? find_replace_text_ : find_query_;
+	// Удаляем последний символ UTF-8 (кириллица — два байта).
+	std::size_t cut = field.size();
+	while (cut > 0 && (static_cast<unsigned char>(field[cut - 1]) & 0xC0U) == 0x80U)
+		--cut;
+	if (cut > 0)
+		--cut;
+	field.erase(cut);
+	find_count_hits();
+	find_sync_view();
+	invalidate();
+}
+
+// Все совпадения в документе — для строки «N из M». Полный проход только по
+// запросу (Enter/F3), а не на каждый введённый символ.
+void App::find_count_hits()
+{
+	find_hits_.clear();
+	find_error_.clear();
+	if (buf_ == nullptr || find_query_.empty())
+		return;
+	if (find_regex_)
+	{
+		const FindRegexResult probe =
+			yo::find_regex(*buf_, 0, find_query_, find_opts_.case_sensitive);
+		find_error_ = widen(probe.error);
+		return;
+	}
+	find_hits_ = yo::find_all(*buf_, 0, buf_->size(), find_query_, find_opts_, kFindCountLimit);
+}
+
+void App::find_run(bool forward)
+{
+	find_count_hits();
+	if (find_query_.empty() || buf_ == nullptr || ed_ == nullptr)
+	{
+		find_sync_view();
+		invalidate();
+		return;
+	}
+	if (!find_error_.empty())
+	{
+		MessageBeep(MB_ICONASTERISK);
+		find_sync_view();
+		invalidate();
+		return;
+	}
+
+	const std::size_t from =
+		ed_->has_selection() ? (forward ? ed_->sel_end() : ed_->sel_begin()) : ed_->caret();
+	std::size_t begin = std::string::npos;
+	std::size_t end = std::string::npos;
+
+	if (find_regex_)
+	{
+		FindRegexResult r = forward
+			? yo::find_regex(*buf_, from, find_query_, find_opts_.case_sensitive)
+			: yo::find_regex_prev(*buf_, from, find_query_, find_opts_.case_sensitive);
+		if (!r.found() && !r.error.empty())
+		{
+			find_error_ = widen(r.error);
+			MessageBeep(MB_ICONASTERISK);
+			find_sync_view();
+			invalidate();
+			return;
+		}
+		if (!r.found())
+		{
+			// Дошли до края — переходим на другой (как F3 в большинстве
+			// редакторов; оригинал не зацикливал, но так удобнее).
+			r = forward ? yo::find_regex(*buf_, 0, find_query_, find_opts_.case_sensitive)
+						: yo::find_regex_prev(*buf_, buf_->size(), find_query_, find_opts_.case_sensitive);
+		}
+		begin = r.begin;
+		end = r.end;
+	}
+	else
+	{
+		begin = forward ? yo::find_next(*buf_, from, find_query_, find_opts_)
+						: yo::find_prev(*buf_, from, find_query_, find_opts_);
+		if (begin == std::string::npos)
+			begin = forward ? yo::find_next(*buf_, 0, find_query_, find_opts_)
+							: yo::find_prev(*buf_, buf_->size(), find_query_, find_opts_);
+		if (begin != std::string::npos)
+			end = begin + find_query_.size();
+	}
+
+	if (begin == std::string::npos || begin >= buf_->size())
+	{
+		find_index_ = 0;
+		find_total_ = find_hits_.size();
+		MessageBeep(MB_ICONASTERISK);
+		find_sync_view();
+		invalidate();
+		return;
+	}
+
+	find_total_ = find_hits_.size();
+	find_index_ = 0;
+	if (!find_hits_.empty())
+	{
+		const auto it = std::lower_bound(find_hits_.begin(), find_hits_.end(), begin);
+		if (it != find_hits_.end() && *it == begin)
+			find_index_ = static_cast<std::size_t>(it - find_hits_.begin()) + 1;
+	}
+
+	ed_->set_caret(begin);
+	ed_->set_caret(end, true);
+	caret_on_ = true;
+	ed_->ensure_caret_visible();
+	update_scrollbars();
+	find_sync_view();
+	invalidate();
+}
+
+void App::find_next() { find_run(true); }
+
+void App::find_prev() { find_run(false); }
+
+void App::find_replace()
 {
 	if (find_query_.empty())
 		return;
-	std::size_t start = ed_->has_selection() ? ed_->sel_end() : ed_->caret();
-	std::size_t hit = find_from(start, find_query_);
-	if (hit == std::string::npos && start > 0)
-		hit = find_from(0, find_query_);
-	if (hit == std::string::npos)
+	if (readonly_)
 	{
 		MessageBeep(MB_ICONASTERISK);
 		return;
 	}
-	ed_->set_caret(hit);
-	ed_->set_caret(hit + find_query_.size(), true);
+	// Заменяем только если выделено ровно найденное, иначе сначала ищем.
+	const std::size_t sel_a = ed_->sel_begin();
+	const std::size_t sel_b = ed_->sel_end();
+	bool matched = false;
+	if (ed_->has_selection())
+	{
+		if (find_regex_)
+		{
+			const FindRegexResult r = yo::find_regex(*buf_, sel_a, find_query_, find_opts_.case_sensitive);
+			matched = r.found() && r.begin == sel_a && r.end == sel_b;
+		}
+		else if (sel_b - sel_a == find_query_.size())
+		{
+			std::string text;
+			buf_->read(sel_a, sel_b - sel_a, text);
+			const std::vector<std::size_t> hits = yo::find_in_line(text, find_query_, find_opts_);
+			matched = !hits.empty() && hits.front() == 0;
+		}
+	}
+	if (!matched)
+	{
+		find_run(true);
+		return;
+	}
+
+	ed_->begin_group("Заменить");
+	ed_->delete_selection();
+	if (!find_replace_text_.empty())
+		ed_->insert_text(find_replace_text_);
+	ed_->end_group();
+	ed_->set_caret(sel_a + find_replace_text_.size());
 	caret_on_ = true;
+	find_count_hits();
+	// Сразу переходим к следующему вхождению — как «Заменить» в диалогах.
+	find_run(true);
+}
+
+void App::find_replace_all()
+{
+	if (find_query_.empty() || readonly_)
+	{
+		MessageBeep(MB_ICONASTERISK);
+		return;
+	}
+	find_count_hits();
+	if (!find_error_.empty())
+	{
+		MessageBeep(MB_ICONASTERISK);
+		invalidate();
+		return;
+	}
+	std::size_t done = 0;
+	if (find_regex_)
+	{
+		// Совпадения собираем заранее, заменяем с конца — смещения не едут.
+		std::vector<std::pair<std::size_t, std::size_t>> hits;
+		std::size_t pos = 0;
+		while (pos < buf_->size() && hits.size() < kFindCountLimit)
+		{
+			const FindRegexResult r = yo::find_regex(*buf_, pos, find_query_, find_opts_.case_sensitive);
+			if (!r.found())
+				break;
+			hits.emplace_back(r.begin, r.end);
+			pos = r.end > r.begin ? r.end : r.end + 1;
+		}
+		if (!hits.empty())
+		{
+			ed_->begin_group("Заменить всё");
+			for (std::size_t i = hits.size(); i > 0; --i)
+			{
+				buf_->erase(hits[i - 1].first, hits[i - 1].second - hits[i - 1].first);
+				if (!find_replace_text_.empty())
+					buf_->insert(hits[i - 1].first, find_replace_text_);
+			}
+			ed_->end_group();
+			done = hits.size();
+		}
+	}
+	else
+	{
+		done = yo::replace_all(*buf_, 0, buf_->size(), find_query_, find_replace_text_, find_opts_);
+	}
+	ed_->set_caret(ed_->has_selection() ? ed_->sel_begin() : ed_->caret());
+	find_hits_.clear();
+	find_index_ = 0;
+	find_total_ = 0;
+	refresh_view();
+	find_sync_view();
+	invalidate();
+	if (done == 0)
+		MessageBeep(MB_ICONASTERISK);
+}
+
+// Геометрия полосы и подсветка совпадений в видимых строках.
+void App::find_sync_view()
+{
+	find_view_ = {};
+	// Поле номеров строк (меню «Вид»).
+	float gutter = 0.0F;
+	if (show_numbers_ && buf_ != nullptr)
+	{
+		const std::size_t digits = std::to_string(std::max<std::size_t>(1, buf_->line_count())).size();
+		gutter = static_cast<float>(digits) * std::max(4.0F, renderer_.char_width() * 0.7F) + 10.0F;
+	}
+	renderer_.set_gutter_width(gutter);
+
+	if (!show_find_ || ed_ == nullptr)
+	{
+		find_marks_.clear();
+		return;
+	}
+
+	const float pad = renderer_.padding();
+	const float w = std::max(0.0F, renderer_.width_dip());
+	const float rh = renderer_.find_height();
+	const float bar_h = find_replace_row_ ? rh * 2.0F + 2.0F : rh;
+	const float bottom = renderer_.height_dip() - renderer_.status_height();
+	const float top = std::max(0.0F, bottom - bar_h);
+
+	find_view_.rect = D2D1::RectF(0.0F, top, w, bottom);
+	find_view_.h = bar_h;
+	find_view_.replace_mode = find_replace_row_;
+	find_view_.query = widen(find_query_);
+	find_view_.replace = widen(find_replace_text_);
+	find_view_.focus = find_focus_;
+
+	const auto add_button = [&](std::wstring label, int id, float right, float row_top, bool toggle,
+								bool checked)
+	{
+		const float bw = std::max(26.0F, renderer_.measure_ui(label) + 18.0F);
+		FindBarButtonView b;
+		b.rect = D2D1::RectF(std::max(0.0F, right - bw), row_top + 2.0F, right, row_top + rh - 2.0F);
+		b.label = std::move(label);
+		b.id = id;
+		b.toggle = toggle;
+		b.checked = checked;
+		find_view_.buttons.push_back(b);
+		return std::max(0.0F, right - bw);
+	};
+
+	float right = w - pad;
+	right = add_button(L"×", kFindBtnClose, right, top, false, false) - 2.0F;
+	right = add_button(L"Слово", kFindBtnWord, right, top, true, find_opts_.whole_word) - 2.0F;
+	right = add_button(L"Aa", kFindBtnCase, right, top, true, find_opts_.case_sensitive) - 2.0F;
+	right = add_button(L"Назад", kFindBtnPrev, right, top, false, false) - 2.0F;
+	right = add_button(L"Далее", kFindBtnNext, right, top, false, false) - 4.0F;
+	find_view_.query_rect = D2D1::RectF(pad, top + 3.0F, std::max(pad + 30.0F, right), top + rh - 3.0F);
+
+	if (find_replace_row_)
+	{
+		const float y2 = top + rh + 2.0F;
+		float r2 = w - pad;
+		r2 = add_button(L"Заменить всё", kFindBtnReplaceAll, r2, y2, false, false) - 2.0F;
+		r2 = add_button(L"Заменить", kFindBtnReplace, r2, y2, false, false) - 4.0F;
+		find_view_.replace_rect =
+			D2D1::RectF(pad, y2 + 3.0F, std::max(pad + 30.0F, r2), y2 + rh - 3.0F);
+	}
+
+	find_collect_marks();
+}
+
+void App::find_collect_marks()
+{
+	find_marks_.clear();
+	if (!show_find_ || find_query_.empty() || ed_ == nullptr || buf_ == nullptr || !find_error_.empty())
+		return;
+	const std::size_t first = ed_->first_visible_line();
+	const std::size_t count = ed_->visible_line_count() + 1;
+	const std::size_t lines = buf_->line_count();
+	for (std::size_t i = first; i < first + count && i < lines; ++i)
+	{
+		if (find_regex_)
+			continue; // РВ подсвечиваем только как найденное выделение
+		const std::string_view text = buf_->line_text(i);
+		const std::size_t base = buf_->line_start(i);
+		for (const std::size_t at : yo::find_in_line(text, find_query_, find_opts_))
+			find_marks_.emplace_back(base + at, base + at + find_query_.size());
+	}
+}
+
+bool App::find_click(float x, float y)
+{
+	if (!show_find_)
+		return false;
+	find_sync_view(); // геометрия могла устареть после смены размера окна
+	const D2D1_RECT_F& r = find_view_.rect;
+	if (x < r.left || x > r.right || y < r.top || y > r.bottom)
+	{
+		// Клик по тексту закрывает полосу? Нет: она не модальна, но и не
+		// должна «съедать» клик — возвращаем false, работаем с текстом.
+		return false;
+	}
+	for (const FindBarButtonView& b : find_view_.buttons)
+	{
+		if (x < b.rect.left || x > b.rect.right || y < b.rect.top || y > b.rect.bottom)
+			continue;
+		switch (b.id)
+		{
+		case kFindBtnNext:
+			find_run(true);
+			break;
+		case kFindBtnPrev:
+			find_run(false);
+			break;
+		case kFindBtnCase:
+			find_toggle_case();
+			break;
+		case kFindBtnWord:
+			find_toggle_word();
+			break;
+		case kFindBtnClose:
+			find_close();
+			break;
+		case kFindBtnReplace:
+			find_replace();
+			break;
+		case kFindBtnReplaceAll:
+			find_replace_all();
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+	if (y >= find_view_.query_rect.top && y <= find_view_.query_rect.bottom)
+	{
+		find_focus_ = 0;
+		invalidate();
+		return true;
+	}
+	if (find_replace_row_ && y >= find_view_.replace_rect.top && y <= find_view_.replace_rect.bottom)
+	{
+		find_focus_ = 1;
+		invalidate();
+		return true;
+	}
+	return true; // клик по полосе в текст не проваливается
+}
+
+bool App::find_mouse_move(float x, float y)
+{
+	if (!show_find_)
+		return false;
+	const D2D1_RECT_F& r = find_view_.rect;
+	if (x < r.left || x > r.right || y < r.top || y > r.bottom)
+		return false;
+	bool changed = false;
+	for (FindBarButtonView& b : find_view_.buttons)
+	{
+		const bool hot = x >= b.rect.left && x <= b.rect.right && y >= b.rect.top &&
+			y <= b.rect.bottom;
+		if (hot != b.hot)
+		{
+			b.hot = hot;
+			changed = true;
+		}
+	}
+	if (changed)
+		invalidate();
+	return true;
+}
+
+bool App::find_char(wchar_t ch)
+{
+	if (!show_find_ || find_focus_ < 0)
+		return false;
+	if (ch < 0x20)
+		return true; // управляющие символы в поле не вставляем
+	find_add_text(utf16_to_utf8(std::u16string(1, static_cast<char16_t>(ch))));
+	return true;
+}
+
+bool App::find_key(WPARAM vk, bool ctrl, bool shift)
+{
+	if (!show_find_)
+		return false;
+	if (find_focus_ < 0)
+	{
+		// Пользователь щёлкнул в тексте: полоса остаётся (по ней видно
+		// найденное), но печать идёт в документ. Из клавиш забираем только
+		// навигацию по поиску.
+		if (vk == VK_F3)
+		{
+			find_run(!shift);
+			return true;
+		}
+		if (vk == VK_ESCAPE)
+		{
+			find_close();
+			return true;
+		}
+		if (ctrl && vk == 'F')
+		{
+			find_focus_ = 0;
+			invalidate();
+			return true;
+		}
+		if (ctrl && vk == 'H')
+		{
+			find_replace_row_ = true;
+			find_focus_ = 1;
+			find_sync_view();
+			invalidate();
+			return true;
+		}
+		return false;
+	}
+	switch (vk)
+	{
+	case VK_ESCAPE:
+		find_close();
+		return true;
+	case VK_RETURN:
+		if (find_focus_ == 1 && find_replace_row_)
+			find_replace();
+		else
+			find_run(!shift);
+		return true;
+	case VK_F3:
+		find_run(!shift);
+		return true;
+	case VK_TAB:
+		if (find_replace_row_)
+		{
+			find_focus_ = find_focus_ == 1 ? 0 : 1;
+			invalidate();
+		}
+		return true;
+	case VK_BACK:
+		find_backspace();
+		return true;
+	case VK_LEFT:
+	case VK_RIGHT:
+	case VK_UP:
+	case VK_DOWN:
+	case VK_HOME:
+	case VK_END:
+	case VK_PRIOR:
+	case VK_NEXT:
+	case VK_DELETE:
+		return true; // курсор документа этими клавишами не двигаем
+	default:
+		break;
+	}
+	if (ctrl)
+	{
+		switch (vk)
+		{
+		case 'H':
+			find_replace_row_ = !find_replace_row_;
+			if (!find_replace_row_)
+				find_focus_ = 0;
+			find_sync_view();
+			invalidate();
+			return true;
+		case 'F':
+			if (shift)
+			{
+				find_regex_ = true;
+				find_count_hits();
+				find_sync_view();
+				invalidate();
+			}
+			return true;
+		default:
+			break;
+		}
+	}
+	return false;
+}
+
+void App::mark_yofy_changes(std::size_t from, std::size_t to)
+{
+	yofy_marks_.clear();
+	yofy_mark_index_ = 0;
+	if (!mark_ || buf_ == nullptr)
+		return;
+	// Замены е→ё в UTF-8 не меняют длину (оба символа — два байта),
+	// поэтому подсвечиваем сами «ё»/«Ё» в обработанном диапазоне: они и есть
+	// сделанные замены. Так же красит замены Mark в оригинале.
+	const std::size_t end = std::min(to, buf_->size());
+	std::size_t pos = from;
+	constexpr std::size_t kChunk = 1U << 16;
+	constexpr std::size_t kMaxMarks = 200000;
+	while (pos < end && yofy_marks_.size() < kMaxMarks)
+	{
+		const std::size_t take = std::min(kChunk, end - pos);
+		std::string data;
+		buf_->read(pos, take, data);
+		for (std::size_t i = 0; i + 1 < data.size(); ++i)
+		{
+			const auto c0 = static_cast<unsigned char>(data[i]);
+			const auto c1 = static_cast<unsigned char>(data[i + 1]);
+			if ((c0 == 0xD1U && c1 == 0x91U) || (c0 == 0xD0U && c1 == 0x81U)) // ё / Ё
+				yofy_marks_.emplace_back(pos + i, pos + i + 2);
+		}
+		if (take <= 1)
+			break;
+		pos += take - 1; // байт перекрытия: пара не рвётся на границе куска
+	}
+}
+
+void App::clear_yofy_marks()
+{
+	yofy_marks_.clear();
+	yofy_mark_index_ = 0;
+	invalidate();
+}
+
+void App::yofy_goto(bool forward)
+{
+	if (yofy_marks_.empty() || ed_ == nullptr)
+	{
+		MessageBeep(MB_ICONASTERISK);
+		return;
+	}
+	const std::size_t caret = ed_->caret();
+	std::size_t target = std::string::npos;
+	if (forward)
+	{
+		for (const auto& m : yofy_marks_)
+		{
+			if (m.first > caret)
+			{
+				target = m.first;
+				break;
+			}
+		}
+		if (target == std::string::npos)
+			target = yofy_marks_.front().first; // с конца — по кругу в начало
+	}
+	else
+	{
+		for (auto it = yofy_marks_.rbegin(); it != yofy_marks_.rend(); ++it)
+		{
+			if (it->first < caret)
+			{
+				target = it->first;
+				break;
+			}
+		}
+		if (target == std::string::npos)
+			target = yofy_marks_.back().first;
+	}
+	ed_->set_caret(target);
+	ed_->set_caret(std::min(target + 2, buf_->size()), true);
+	caret_on_ = true;
+	ed_->ensure_caret_visible();
 	update_scrollbars();
 	invalidate();
+}
+
+void App::toggle_line_numbers()
+{
+	show_numbers_ = !show_numbers_;
+	update_menu_checks();
+	find_sync_view();
+	refresh_view();
+}
+
+void App::show_about()
+{
+	std::wstring text = L"Ё (yo-c-) — ёфикатор русских текстов\n\n";
+	text += L"Редактор с ёфикацией по словарю yox.dat и словарю регулярных выражений.\n";
+	text += L"Ёфикация работает построчно, неоднозначные слова предлагаются в панели вопросов.\n\n";
+	text += L"Горячие клавиши: Ctrl+F — найти, Ctrl+H — заменить, F3 / Shift+F3 — далее / назад,\n";
+	text += L"Ctrl+Shift+R — поиск по образцу (РВ), Ctrl+W / Ctrl+Q — переход по заменам,\n";
+	text += L"Ctrl+E — ёфицировать, Ctrl++ / Ctrl+- / Ctrl+0 — размер текста.\n\n";
+	text += L"Настройки хранятся в yo.ini рядом с программой.";
+	MessageBoxW(hwnd_, text.c_str(), L"О программе", MB_OK | MB_ICONINFORMATION);
+}
+
+void App::show_file_props()
+{
+	if (buf_ == nullptr)
+		return;
+	std::wstring text;
+	text += L"Имя: ";
+	text += path_.empty() ? L"(файл ещё не сохранён)" : path_.wstring();
+	text += L"\n\nРазмер в памяти: ";
+	text += std::to_wstring(buf_->size());
+	text += L" байт";
+	if (!path_.empty())
+	{
+		std::error_code ec;
+		const auto bytes = std::filesystem::file_size(path_, ec);
+		if (!ec)
+		{
+			text += L"\nРазмер на диске: ";
+			text += std::to_wstring(static_cast<unsigned long long>(bytes));
+			text += L" байт";
+		}
+	}
+	text += L"\nСтрок: ";
+	text += std::to_wstring(buf_->line_count());
+	text += L"\nКодировка: ";
+	text += encoding_name(enc_, bom_);
+	text += L"\nПеревод строк: ";
+	text += eol_name(eol_);
+	text += L"\nИзменён: ";
+	text += buf_->modified() ? L"да" : L"нет";
+	if (last_yofy_.lines > 0)
+	{
+		text += L"\n\nПоследняя ёфикация: замен ";
+		text += std::to_wstring(last_yofy_.replaced);
+		text += L", строк ";
+		text += std::to_wstring(last_yofy_.lines);
+		text += L", вопросов ";
+		text += std::to_wstring(last_yofy_.asked);
+	}
+	MessageBoxW(hwnd_, text.c_str(), L"Свойства файла", MB_OK | MB_ICONINFORMATION);
 }
 
 // ---------------------------------------------------------------- ёфикация
@@ -1944,6 +2683,7 @@ void App::run_yofification()
 
 	if (last_yofy_.changed)
 	{
+		mark_yofy_changes(from, to);
 		ed_->set_caret(std::min(from, buf_->size()));
 		refresh_view();
 	}
@@ -2396,6 +3136,15 @@ void App::set_document(std::shared_ptr<TextBuffer> buf, const std::filesystem::p
 	readonly_ = false;
 	show_find_ = false;
 	find_query_.clear();
+	find_replace_text_.clear();
+	find_marks_.clear();
+	find_hits_.clear();
+	find_error_.clear();
+	find_index_ = 0;
+	find_total_ = 0;
+	find_replace_row_ = false;
+	yofy_marks_.clear();
+	yofy_mark_index_ = 0;
 	sync_metrics();
 	ed_->move_doc_start();
 	refresh_view();
@@ -2807,6 +3556,8 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		SetFocus(hwnd_);
 		if (menu_click(x, y))
 			return 0;
+		if (find_click(x, y))
+			return 0;
 		on_lbutton_down(x, y, extend);
 		return 0;
 	}
@@ -2841,6 +3592,8 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
 		SetCursor(LoadCursorW(nullptr, y < renderer_.bar_height() ? IDC_ARROW : IDC_IBEAM));
 		if (menu_mouse_move(x, y))
+			return 0;
+		if (find_mouse_move(x, y))
 			return 0;
 		on_mouse_move(x, y);
 		return 0;
