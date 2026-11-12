@@ -206,3 +206,147 @@ TEST_CASE("перенос: переключение режима не теряе
 	CHECK(ed->caret_y() == 0.0F);
 	CHECK(ed->caret_x() == 120.0F);
 }
+
+TEST_CASE("перенос: видимые ряды без переноса (регресс падения отрисовки)", "[wrap]")
+{
+	// Без переноса visible_rows() обязан работать так же, как список строк:
+	// раньше здесь читалась пустая таблица рядов, и отрисовка падала
+	// (белое окно) на первом же кадре.
+	auto ed = make_editor("первая\nвторая\nтретья\n", false);
+	REQUIRE_FALSE(ed->word_wrap());
+	const std::vector<Editor::Row> rows = ed->visible_rows();
+	REQUIRE(rows.size() == 4); // три строки + пустая после последнего «\n»
+	CHECK(rows[0].line == 0);
+	CHECK(rows[1].line == 1);
+	CHECK(rows[2].line == 2);
+	CHECK(rows[3].line == 3);
+	CHECK(rows[3].to == 0);
+	CHECK(rows[1].from == 0);
+	CHECK(rows[1].to == 12); // «вторая» — 6 символов по 2 байта
+	CHECK(rows[1].top == 20.0F);
+	CHECK(rows[1].first_of_line);
+	CHECK(rows[1].last_of_line);
+
+	// То, что делает рендерер на каждом кадре: текст строки и ширина префиксов.
+	for (const Editor::Row& row : rows)
+	{
+		const std::string_view text = ed->buffer().line_text(row.line);
+		CHECK(row.to <= text.size());
+		CHECK(ed->row_width(row, row.from) == 0.0F);
+		CHECK(ed->row_width(row, row.to) >= 0.0F);
+	}
+
+	// Прокрутка вниз (окно — два ряда): первый ряд — третья строка.
+	ed->set_viewport(100.0F, 40.0F);
+	ed->scroll_by(0.0F, 40.0F);
+	const std::vector<Editor::Row> scrolled = ed->visible_rows();
+	REQUIRE_FALSE(scrolled.empty());
+	CHECK(scrolled.front().line == 2);
+	CHECK(ed->first_visible_row() == 2);
+	CHECK(ed->visible_row_count() == 2); // третья строка и пустая
+}
+
+TEST_CASE("перенос: видимые ряды — пустой буфер и один ряд", "[wrap]")
+{
+	auto ed = make_editor("", false);
+	const std::vector<Editor::Row> rows = ed->visible_rows();
+	REQUIRE(rows.size() == 1); // одна пустая строка
+	CHECK(rows[0].line == 0);
+	CHECK(rows[0].from == 0);
+	CHECK(rows[0].to == 0);
+
+	ed->set_word_wrap(true);
+	const std::vector<Editor::Row> wrapped = ed->visible_rows();
+	REQUIRE(wrapped.size() == 1);
+	CHECK(wrapped[0].line == 0);
+}
+
+TEST_CASE("перенос: рендерерный обход рядов в обоих режимах", "[wrap]")
+{
+	// Полный проход «как в paint»: текст, выделение и подсветка по каждому
+	// видимому ряду — ловит выход за границы строки и нулевые срезы.
+	const std::string text = "0123456789abcdefghij\nвторая строка подлиннее\n\nтретья\n";
+	for (const bool wrap : { false, true })
+	{
+		auto ed = make_editor(text, wrap);
+		ed->set_viewport(100.0F, 60.0F);
+		ed->scroll_by(0.0F, 20.0F);
+		const std::vector<Editor::Row> rows = ed->visible_rows();
+		REQUIRE_FALSE(rows.empty());
+		for (const Editor::Row& row : rows)
+		{
+			const std::string_view bytes = ed->buffer().line_text(row.line);
+			REQUIRE(row.from <= row.to);
+			REQUIRE(row.to <= bytes.size());
+			CHECK(ed->row_width(row, row.from) == 0.0F);
+			CHECK(ed->row_width(row, row.to) >= 0.0F);
+			CHECK(ed->row_of_offset(ed->buffer().line_start(row.line) + row.from) <=
+				  ed->row_count());
+		}
+	}
+}
+
+TEST_CASE("перенос: стресс геометрии в обоих режимах", "[wrap]")
+{
+	// Детерминированный обход: двигаем курсор и прокрутку и запрашиваем всю
+	// геометрию, которой пользуется рендерер. Ловит выходы за границы после
+	// правок в раскладке (под ASan/UBSan).
+	std::string text;
+	text += "короткая строка\n";
+	text += std::string(120, 'x') + "\n";
+	text += "с табуляцией\tи пробелами здесь\n";
+	text += "\n";
+	text += "ёжик ёлка тёмный\n";
+	text += std::string(40, 'y');
+
+	for (const bool wrap : { false, true })
+	{
+		auto ed = make_editor(text, wrap);
+		for (int step = 0; step < 60; ++step)
+		{
+			switch (step % 6)
+			{
+			case 0:
+				ed->move_right();
+				break;
+			case 1:
+				ed->move_down();
+				break;
+			case 2:
+				ed->move_up();
+				break;
+			case 3:
+				ed->scroll_by(0.0F, 25.0F);
+				break;
+			case 4:
+				ed->move_doc_end();
+				break;
+			default:
+				ed->move_doc_start();
+				ed->move_line_end();
+				break;
+			}
+			const std::vector<Editor::Row> rows = ed->visible_rows();
+			for (const Editor::Row& row : rows)
+			{
+				const std::string_view bytes = ed->buffer().line_text(row.line);
+				REQUIRE(row.from <= row.to);
+				REQUIRE(row.to <= bytes.size());
+				CHECK(ed->row_width(row, row.from) == 0.0F);
+				CHECK(ed->row_width(row, bytes.size()) >= 0.0F);
+			}
+			// Точки на сетке экрана должны попадать в допустимые смещения.
+			for (float x : { -5.0F, 0.0F, 37.0F, 250.0F })
+			{
+				for (float y : { -5.0F, 0.0F, 45.0F, 400.0F })
+				{
+					const std::size_t off = ed->offset_at(x, y);
+					CHECK(off <= ed->buffer().size());
+				}
+			}
+			CHECK(ed->row_of_offset(ed->caret()) < std::max<std::size_t>(1, ed->row_count()));
+			CHECK(ed->caret_x() >= 0.0F);
+			CHECK(ed->caret_y() >= 0.0F);
+		}
+	}
+}

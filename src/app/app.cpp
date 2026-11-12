@@ -1334,6 +1334,13 @@ void App::on_timer()
 
 void App::on_char(wchar_t ch)
 {
+	// Панель редактора словаря перехватывает ввод целиком — документ в это
+	// время не редактируется (и readonly файла здесь ни при чём).
+	if (dict_open_)
+	{
+		(void)dict_char(ch);
+		return;
+	}
 	if (readonly_)
 		return;
 
@@ -1356,11 +1363,6 @@ void App::on_char(wchar_t ch)
 	}
 	pending_high_ = 0;
 
-	if (dict_open_)
-	{
-		(void)dict_char(ch); // редактор словаря: ввод в поле фильтра/слова
-		return;
-	}
 	if (options_open_)
 		return; // в окне настроек нет полей ввода
 	if (find_char(ch))
@@ -3494,8 +3496,10 @@ bool App::dict_char(wchar_t ch)
 {
 	if (!dict_open_)
 		return false;
-	if (ch >= 0x20 && ch != 0x7F)
-		dict_type(static_cast<char32_t>(ch));
+	const auto cp = static_cast<char32_t>(ch);
+	// Суррогаты поодиночке (пары приходят не всегда) и управляющие — не текст.
+	if (cp >= 0x20 && cp != 0x7F && !(cp >= 0xD800 && cp <= 0xDFFF))
+		dict_type(cp);
 	return true;
 }
 

@@ -672,7 +672,10 @@ std::vector<Editor::Row> Editor::visible_rows() const
 	{
 		const std::size_t line = line_of_row(row);
 		const std::vector<Segment> segs = line_segments(line);
-		const std::size_t base = static_cast<std::size_t>(row_prefix_[line]);
+		// Без переноса ряд совпадает со строкой, и таблицы row_prefix_ нет
+		// (она строится только в режиме переноса) — берём номер строки.
+		const std::size_t base =
+			wrap_ ? static_cast<std::size_t>(row_prefix_[line]) : line;
 		for (std::size_t i = row - base; i < segs.size() && row < rows_total; ++i, ++row)
 		{
 			Row r;
