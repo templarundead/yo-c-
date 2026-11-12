@@ -1517,19 +1517,23 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 	// диалога или таблица не создалась), и тогда Ctrl+C/V/Z молча не работают.
 	if (ctrl && !ask_.active)
 	{
+		// Раскладка — та же, что в setup_accels() (Main.dfm оригинала):
+		// Ctrl+R — «Найти регулярное выражение», Ctrl+S — «Сохранить текст как»,
+		// Ctrl+Shift+R — перечитать с диска.
 		switch (vk)
 		{
 		case 'N':
 			on_command(kCmdNew);
 			return;
+		case 'L':
 		case 'O':
 			on_command(kCmdOpen);
 			return;
 		case 'R':
-			on_command(kCmdReload);
+			on_command(shift ? kCmdReload : kCmdFindRegex);
 			return;
 		case 'S':
-			on_command(shift ? kCmdSaveAs : kCmdSave);
+			on_command(kCmdSaveAs);
 			return;
 		case 'Z':
 			on_command(kCmdUndo);
@@ -1549,12 +1553,37 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 		case 'A':
 			on_command(kCmdSelectAll);
 			return;
-		case 'F':
-			on_command(kCmdFind);
-			return;
 		case 'E':
+			// Ctrl+Shift+E — «спросить про слово», Ctrl+E — наш алиас
+			// ёфикации (в оригинале её запускают F9 / Ctrl+F9).
 			on_command(shift ? kCmdAskWord : kCmdYofify);
 			return;
+		case 'D':
+			if (shift)
+			{
+				on_command(kCmdDictEditor);
+				return;
+			}
+			break;
+		case 'P':
+			on_command(kCmdFileProp);
+			return;
+		case 'W':
+			on_command(shift ? kCmdWordWrap : kCmdYofyNext);
+			return;
+		case 'Q':
+			on_command(kCmdYofyPrev);
+			return;
+		case 'H':
+			on_command(kCmdReplace);
+			return;
+		case 'F':
+			if (!shift)
+			{
+				on_command(kCmdFind);
+				return;
+			}
+			break;
 		case VK_OEM_PLUS:
 		case VK_ADD:
 			on_command(kCmdFontBigger);
@@ -1570,6 +1599,12 @@ void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 	if (vk == VK_F3 && !ask_.active)
 	{
 		find_next();
+		return;
+	}
+	if (vk == VK_F9 && !ask_.active)
+	{
+		// F9 / Ctrl+F9 — как в оригинале (Yopos1 / Yobegin1).
+		run_yofification(ctrl);
 		return;
 	}
 
