@@ -20,6 +20,8 @@
 #include <shellapi.h> // HDROP
 
 #include "yo/find.hpp"
+#include "yo/mru.hpp"
+#include "yo/optionspanel.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -203,7 +205,36 @@ private:
 	[[nodiscard]] bool find_char(wchar_t ch);
 	[[nodiscard]] bool find_key(WPARAM vk, bool ctrl, bool shift);
 
+	// --- окно настроек (аналог OptionsForm, но наложением в тёмной теме) ---
+	void options_open_dialog();
+	void options_close();
+	void options_apply(bool remember);
+	void options_sync_view();
+	void options_activate(int row);
+	void options_font_step(int delta);
+	void options_move(int delta);
+	[[nodiscard]] bool options_click(float x, float y);
+	[[nodiscard]] bool options_mouse_move(float x, float y);
+	[[nodiscard]] bool options_key(WPARAM vk, bool ctrl, bool shift);
+	// Выбор файла словаря (меню «Файл» и строки окна настроек).
+	bool pick_dictionary(bool regex_dict);
+	// Перечитать словари с диска (OpenDic1 / OpenRegExprDic1 оригинала).
+	void reload_dictionaries();
+	// Сброс пользовательских «Всегда Е/Ё» (ClearUserSel оригинала).
+	void clear_user_selection();
+	[[nodiscard]] std::string dictionary_display(bool regex_dict) const;
+
 	// --- прочее из меню оригинала ---
+	// --- последние файлы (MRU, как Openfile0 оригинала) ---
+	// Добавить/запомнить файл в списке и перестроить меню.
+	void mru_touch(const std::filesystem::path& path, std::size_t position);
+	// Запомнить позицию курсора текущего файла (при закрытии/переключении).
+	void mru_remember_current();
+	bool open_mru(std::size_t index);
+	void clear_mru();
+	[[nodiscard]] std::string mru_flags() const; // текущая кодировка буквами ini
+	[[nodiscard]] static bool mru_decode_flags(std::string_view flags, Encoding& enc, bool& bom);
+
 	void toggle_line_numbers();
 	void show_about();
 	void show_file_props();
@@ -234,6 +265,8 @@ private:
 	std::unique_ptr<RegexDictionary> regexdict_;
 	std::unique_ptr<Yoficator> yofy_;
 	YofyResult last_yofy_{};
+	Stats last_stats_{};		 // счётчики последнего прохода (§4.7)
+	double last_yofy_ms_ = 0.0;	 // его длительность — для T/S в статусе
 	AskState ask_;
 
 	std::filesystem::path path_;
@@ -263,6 +296,15 @@ private:
 	std::vector<std::pair<std::size_t, std::size_t>> yofy_marks_;
 	std::size_t yofy_mark_index_ = 0;
 	bool show_numbers_ = false;
+
+	// Окно настроек: значения правятся в options_state_, применяются
+	// кнопкой «Применить»/«Запомнить».
+	bool options_open_ = false;
+	yo::OptionsState options_state_{};
+	yo::OptionsLayout options_layout_{};
+	OptionsView options_view_{};
+	int options_row_ = 0; // выбранная строка
+	int options_hot_ = -1; // кнопка под мышью
 	char32_t pending_high_ = 0;
 	int wheel_accum_ = 0; // остаток дельты колеса (тачпады шлют меньше 120)
 	// --- настройки (yo.ini рядом с exe, как у оригинала) ---
@@ -274,6 +316,9 @@ private:
 	bool to_confirm_abbr_ = true;
 	std::wstring dict_setting_;	 // [Yo] Dictionary (пусто — искать рядом с exe)
 	std::wstring regex_setting_; // [Yo] RegExprDictionary
+	MruList mru_;
+	std::size_t last_file_index_ = 0; // [Files] LastFileN
+	bool recall_last_file_ = true;	  // [Yo] RecallLastFile
 	std::filesystem::path ini_path_;
 	RECT saved_rect_{};
 	bool has_saved_rect_ = false;

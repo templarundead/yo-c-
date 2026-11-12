@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -70,6 +71,12 @@ constexpr int kCmdAbout = 1026;
 constexpr int kCmdYofyNext = 1034;
 constexpr int kCmdYofyPrev = 1035;
 constexpr int kCmdClearMarks = 1036;
+constexpr int kCmdMru1 = 1100;   // kCmdMru1..kCmdMru9 — последние файлы
+constexpr int kCmdClearMru = 1110;
+constexpr int kCmdOptions = 1111;
+constexpr int kCmdOpenDict = 1112;
+constexpr int kCmdOpenRegexDict = 1113;
+constexpr int kCmdClearUserSel = 1114;
 
 constexpr UINT_PTR kCaretTimer = 1;
 constexpr int kDefaultWidth = 1000;
@@ -388,6 +395,22 @@ void App::load_settings()
 		has_saved_rect_ = true;
 	}
 	saved_maximized_ = ini.get_bool(kYo, "Maximized", false);
+	recall_last_file_ = ini.get_bool(kYo, "RecallLastFile", recall_last_file_);
+
+	// Последние файлы: [Files] Name1..9 (строки «путь,позиция,флаги») и
+	// [Files] LastFileN — индекс последнего открытого.
+	std::vector<MruEntry> entries;
+	for (std::size_t i = 1; i <= kMruMax; ++i)
+	{
+		const std::string value = ini.get("Files", "Name" + std::to_string(i));
+		if (value.empty())
+			continue;
+		entries.push_back(mru_parse(value));
+	}
+	mru_.set(entries);
+	const long long last = ini.get_int("Files", "LastFileN", 0);
+	if (last >= 0 && static_cast<std::size_t>(last) < mru_.size())
+		last_file_index_ = static_cast<std::size_t>(last);
 	trace("настройки: загружены из yo.ini");
 }
 
@@ -395,6 +418,7 @@ void App::save_settings()
 {
 	if (ini_path_.empty())
 		ini_path_ = settings_path();
+	mru_remember_current(); // позиция курсора в текущем файле — в MRU
 
 	// Файл перезаписывается целиком, поэтому сначала читаем его: чужие
 	// ключи (MRU, цвета, панель инструментов) не должны теряться.
@@ -435,6 +459,21 @@ void App::save_settings()
 		ini.set_int(kYo, "WindowHeight", r.bottom - r.top);
 		ini.set_bool(kYo, "Maximized", IsZoomed(hwnd_) != 0);
 	}
+
+	// Последние файлы: список пишется целиком, лишние ключи NameN удаляются,
+	// чтобы после «Очистить список» в файле не оставалось мусора.
+	for (std::size_t i = 1; i <= kMruMax; ++i)
+	{
+		const std::string key = "Name" + std::to_string(i);
+		const MruEntry* e = mru_.at(i - 1);
+		if (e != nullptr)
+			ini.set("Files", key, mru_format(*e));
+		else if (ini.has("Files", key))
+			ini.set("Files", key, std::string{});
+	}
+	ini.set_int("Files", "LastFileN",
+				last_file_index_ < mru_.size() ? static_cast<long long>(last_file_index_) : 0);
+	ini.set_bool(kYo, "RecallLastFile", recall_last_file_);
 
 	const std::string text = "; Ё (yo-c-) — настройки редактора. Файл можно править руками.\n" + ini.dump();
 	std::ofstream out(ini_path_, std::ios::binary | std::ios::trunc);
@@ -493,6 +532,12 @@ bool App::create(HINSTANCE hinst, int cmd_show, const std::wstring& file)
 	{
 		load_from_path(std::filesystem::path(file));
 		refresh_view();
+	}
+	else if (recall_last_file_ && !mru_.empty())
+	{
+		// Как RecallLastFile оригинала: последний файл открывается сам,
+		// но только если файл не задан в командной строке.
+		open_mru(last_file_index_ < mru_.size() ? last_file_index_ : mru_.size() - 1);
 	}
 	return true;
 }
@@ -573,10 +618,30 @@ void App::build_menus()
 		{ L"Сохранить\tCtrl+S", kCmdSave },
 		{ L"Сохранить как…\tCtrl+Shift+S", kCmdSaveAs },
 		{ L"", 0, true },
-		{ L"Свойства файла…\tCtrl+P", kCmdFileProp },
+		{ L"Загрузить основной словарь…", kCmdOpenDict },
+		{ L"Загрузить словарь РВ…", kCmdOpenRegexDict },
 		{ L"", 0, true },
-		{ L"Выход\tAlt+F4", kCmdExit },
+		{ L"Свойства файла…\tCtrl+P", kCmdFileProp },
 	};
+	// Последние файлы — динамические пункты после разделителя (Openfile0
+	// оригинала): имя файла и Ctrl+1…9.
+	if (!mru_.empty())
+	{
+		file.entries.push_back(MenuEntry{ L"", 0, true });
+		for (std::size_t i = 0; i < mru_.size(); ++i)
+		{
+			const std::filesystem::path p(widen(mru_.entries()[i].path));
+			std::wstring label = p.filename().wstring();
+			if (label.empty())
+				label = p.wstring();
+			label += L"\tCtrl+" + std::to_wstring(i + 1);
+			file.entries.push_back(
+				MenuEntry{ label, kCmdMru1 + static_cast<int>(i) });
+		}
+		file.entries.push_back(MenuEntry{ L"Очистить список последних файлов", kCmdClearMru });
+	}
+	file.entries.push_back(MenuEntry{ L"", 0, true });
+	file.entries.push_back(MenuEntry{ L"Выход\tAlt+F4", kCmdExit });
 	menus_.push_back(std::move(file));
 
 	MenuDef edit;
@@ -611,6 +676,9 @@ void App::build_menus()
 		{ L"Найти замену вперёд\tCtrl+W", kCmdYofyNext },
 		{ L"Найти замену назад\tCtrl+Q", kCmdYofyPrev },
 		{ L"Убрать подсветку замен\tShift+F10", kCmdClearMarks },
+		{ L"Сбросить «Всегда Е/Ё»", kCmdClearUserSel },
+		{ L"", 0, true },
+		{ L"Опции…\tCtrl+,", kCmdOptions },
 	};
 	menus_.push_back(std::move(yofy));
 
@@ -922,6 +990,17 @@ void App::setup_accels()
 		{ FCONTROL | FVIRTKEY, 'P', kCmdFileProp },
 		{ FCONTROL | FVIRTKEY, 'L', kCmdOpen },
 		{ FVIRTKEY, VK_F1, kCmdAbout },
+		{ FCONTROL | FVIRTKEY, '1', kCmdMru1 },
+		{ FCONTROL | FVIRTKEY, '2', kCmdMru1 + 1 },
+		{ FCONTROL | FVIRTKEY, '3', kCmdMru1 + 2 },
+		{ FCONTROL | FVIRTKEY, '4', kCmdMru1 + 3 },
+		{ FCONTROL | FVIRTKEY, '5', kCmdMru1 + 4 },
+		{ FCONTROL | FVIRTKEY, '6', kCmdMru1 + 5 },
+		{ FCONTROL | FVIRTKEY, '7', kCmdMru1 + 6 },
+		{ FCONTROL | FVIRTKEY, '8', kCmdMru1 + 7 },
+		{ FCONTROL | FVIRTKEY, '9', kCmdMru1 + 8 },
+		{ FCONTROL | FVIRTKEY, VK_OEM_COMMA, kCmdOptions },
+		{ FALT | FCONTROL | FVIRTKEY, 'O', kCmdOptions },
 		{ FCONTROL | FVIRTKEY, VK_OEM_PLUS, kCmdFontBigger },
 		{ FCONTROL | FVIRTKEY, VK_OEM_MINUS, kCmdFontSmaller },
 	};
@@ -1110,6 +1189,39 @@ std::wstring App::status_text() const
 		}
 		if (last_yofy_.cancelled)
 			text += L" (прервано)";
+		// Счётчики прохода — как «t=… A=… RE=… REQ:% E:… T:… S:…» в ShowStatus
+		// оригинала (§4.7). Хинт панели расшифровывает поля.
+		if (last_stats_.checked.a > 0)
+		{
+			text += L"   t=";
+			text += std::to_wstring(last_stats_.checked.a);
+			text += L"  A=";
+			text += std::to_wstring(last_stats_.asked.a);
+			text += L"  RE=";
+			text += std::to_wstring(last_stats_.regex_resolved.a);
+			const std::uint64_t re_total = last_stats_.regex_resolved.a + last_stats_.no_regex;
+			if (re_total > 0)
+			{
+				text += L"  REQ:";
+				text += std::to_wstring(last_stats_.regex_resolved.a * 100 / re_total);
+				text += L"%";
+			}
+			text += L"  E:";
+			text += std::to_wstring(last_stats_.wrong_yo);
+			if (last_yofy_ms_ > 0.5)
+			{
+				wchar_t buffer[64] = L"";
+				const double seconds = last_yofy_ms_ / 1000.0;
+				swprintf(buffer, std::size(buffer), L"  T:%.2f", seconds);
+				text += buffer;
+				if (seconds > 0.001 && last_yofy_.replaced > 0)
+				{
+					swprintf(buffer, std::size(buffer), L"  S:%.0f",
+							 static_cast<double>(last_yofy_.replaced) / seconds);
+					text += buffer;
+				}
+			}
+		}
 	}
 	if (show_find_)
 	{
@@ -1145,8 +1257,10 @@ void App::on_paint()
 	MenuBarView bar_view = menu_bar_view();
 	find_sync_view();
 	const auto paint_started = std::chrono::steady_clock::now();
+	options_sync_view();
 	renderer_.paint(*ed_, status_text(), show_find_ ? &find_view_ : nullptr, caret_on_,
-					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view, find_marks_, yofy_marks_);
+					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view, find_marks_, yofy_marks_,
+					options_open_ ? &options_view_ : nullptr);
 	const double paint_ms =
 		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paint_started).count();
 	if (paint_ms > 16.0)
@@ -1217,6 +1331,8 @@ void App::on_char(wchar_t ch)
 	}
 	pending_high_ = 0;
 
+	if (options_open_)
+		return; // в окне настроек нет полей ввода
 	if (find_char(ch))
 		return;
 
@@ -1245,6 +1361,8 @@ void App::on_char(wchar_t ch)
 
 void App::on_key_down(WPARAM vk, bool ctrl, bool shift)
 {
+	if (options_key(vk, ctrl, shift))
+		return;
 	if (find_key(vk, ctrl, shift))
 		return;
 	// Сочетания обрабатываем и здесь, а не только через таблицу акселераторов:
@@ -1561,6 +1679,11 @@ void App::on_context_menu(int x, int y)
 
 void App::on_command(int id)
 {
+	if (id >= kCmdMru1 && id < kCmdMru1 + static_cast<int>(kMruMax))
+	{
+		open_mru(static_cast<std::size_t>(id - kCmdMru1));
+		return;
+	}
 	switch (id)
 	{
 	case kCmdOpen:
@@ -1632,6 +1755,23 @@ void App::on_command(int id)
 		break;
 	case kCmdAbout:
 		show_about();
+		break;
+	case kCmdClearMru:
+		clear_mru();
+		break;
+	case kCmdOptions:
+		options_open_dialog();
+		break;
+	case kCmdOpenDict:
+		if (pick_dictionary(false))
+			reload_dictionaries();
+		break;
+	case kCmdOpenRegexDict:
+		if (pick_dictionary(true))
+			reload_dictionaries();
+		break;
+	case kCmdClearUserSel:
+		clear_user_selection();
 		break;
 	case kCmdFontReset:
 		if (renderer_.set_font_size(15.0F, hwnd_))
@@ -2389,6 +2529,462 @@ bool App::find_key(WPARAM vk, bool ctrl, bool shift)
 	return false;
 }
 
+bool App::options_click(float x, float y)
+{
+	if (!options_open_)
+		return false;
+	options_sync_view(); // размер окна мог измениться
+	const int button = options_layout_.button_at(x, y);
+	if (button >= 0)
+	{
+		const OptionChoice what = options_layout_.buttons[static_cast<std::size_t>(button)].what;
+		switch (what)
+		{
+		case OptionChoice::apply:
+			options_apply(false);
+			break;
+		case OptionChoice::apply_remember:
+			options_apply(true);
+			break;
+		case OptionChoice::cancel:
+			options_close();
+			break;
+		case OptionChoice::font_smaller:
+			options_font_step(-1);
+			break;
+		case OptionChoice::font_bigger:
+			options_font_step(1);
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+	const int row = options_layout_.row_at(x, y);
+	if (row >= 0)
+	{
+		options_row_ = row;
+		options_activate(row);
+	}
+	return true; // окно модально: клик мимо не проваливается в текст
+}
+
+bool App::options_mouse_move(float x, float y)
+{
+	if (!options_open_)
+		return false;
+	const int button = options_layout_.button_at(x, y);
+	if (button != options_hot_)
+	{
+		options_hot_ = button;
+		options_view_.hot = button;
+		invalidate();
+	}
+	return true;
+}
+
+bool App::options_key(WPARAM vk, bool ctrl, bool shift)
+{
+	if (!options_open_)
+		return false;
+	switch (vk)
+	{
+	case VK_ESCAPE:
+		options_close();
+		return true;
+	case VK_RETURN:
+		options_apply(ctrl); // Ctrl+Enter — «применить и запомнить»
+		return true;
+	case VK_UP:
+		options_move(-1);
+		return true;
+	case VK_DOWN:
+		options_move(1);
+		return true;
+	case VK_HOME:
+		options_row_ = 0;
+		options_sync_view();
+		invalidate();
+		return true;
+	case VK_END:
+		if (!options_layout_.rows.empty())
+			options_row_ = static_cast<int>(options_layout_.rows.size()) - 1;
+		options_sync_view();
+		invalidate();
+		return true;
+	case VK_TAB:
+		options_move(shift ? -1 : 1);
+		return true;
+	case VK_SPACE:
+		options_activate(options_row_);
+		return true;
+	default:
+		break;
+	}
+	if (ctrl && vk == VK_OEM_PLUS)
+	{
+		options_font_step(1);
+		return true;
+	}
+	if (ctrl && vk == VK_OEM_MINUS)
+	{
+		options_font_step(-1);
+		return true;
+	}
+	// Остальные клавиши окну настроек не нужны, но и документу не отдаём.
+	return true;
+}
+
+// ---------------------------------------------------------------- настройки
+
+std::string App::dictionary_display(bool regex_dict) const
+{
+	const std::wstring& setting = regex_dict ? regex_setting_ : dict_setting_;
+	if (!setting.empty())
+		return narrow(setting);
+	return regex_dict ? "yo_regexpr.dat" : "yox.dat";
+}
+
+void App::options_open_dialog()
+{
+	if (options_open_)
+		return;
+	options_state_.always_ask = always_ask_;
+	options_state_.silent_yofy = silent_yofy_;
+	options_state_.mark = mark_;
+	options_state_.propose_last = propose_last_;
+	options_state_.regexs = regexs_;
+	options_state_.to_confirm_abbr = to_confirm_abbr_;
+	options_state_.font_size = font_size_;
+	options_state_.dictionary = dictionary_display(false);
+	options_state_.regex_dictionary = dictionary_display(true);
+	options_open_ = true;
+	options_row_ = 0;
+	options_hot_ = -1;
+	options_sync_view();
+	invalidate();
+}
+
+void App::options_close()
+{
+	options_open_ = false;
+	options_view_ = {};
+	options_layout_ = {};
+	options_hot_ = -1;
+	invalidate();
+}
+
+void App::options_sync_view()
+{
+	options_view_ = OptionsView{};
+	options_layout_ = OptionsLayout{};
+	if (!options_open_)
+		return;
+	options_layout_ = yo::layout_options(options_state_, renderer_.width_dip(), renderer_.height_dip(),
+										 renderer_.ui_line_height());
+	if (!options_layout_.visible)
+		return;
+
+	const yo::OptionsLayout& layout = options_layout_;
+	options_view_.rect = D2D1::RectF(layout.x, layout.y, layout.x + layout.w, layout.y + layout.h);
+	options_view_.title = widen(layout.title);
+	for (const yo::OptionRowBox& row : layout.rows)
+	{
+		OptionsRowView view;
+		view.rect = D2D1::RectF(row.x, row.y, row.x + row.w, row.y + row.h);
+		view.label = widen(row.label);
+		view.value = widen(row.value);
+		view.check = row.check;
+		view.checked = row.checked;
+		view.path = row.path;
+		options_view_.rows.push_back(std::move(view));
+	}
+	for (const yo::OptionButtonBox& button : layout.buttons)
+	{
+		OptionsButtonView view;
+		view.rect = D2D1::RectF(button.x, button.y, button.x + button.w, button.y + button.h);
+		view.label = widen(button.label);
+		view.choice = static_cast<int>(button.what);
+		view.primary = button.what == OptionChoice::apply;
+		options_view_.buttons.push_back(std::move(view));
+	}
+	options_view_.focus = options_row_;
+	options_view_.hot = options_hot_;
+}
+
+void App::options_font_step(int delta)
+{
+	options_state_.font_size =
+		std::clamp(options_state_.font_size + static_cast<float>(delta), 8.0F, 48.0F);
+	options_sync_view();
+	invalidate();
+}
+
+void App::options_move(int delta)
+{
+	if (options_layout_.rows.empty())
+		return;
+	const int count = static_cast<int>(options_layout_.rows.size());
+	options_row_ = (options_row_ + delta) % count;
+	if (options_row_ < 0)
+		options_row_ += count;
+	options_sync_view();
+	invalidate();
+}
+
+void App::options_activate(int row)
+{
+	if (row < 0 || static_cast<std::size_t>(row) >= options_layout_.rows.size())
+		return;
+	const OptionChoice what = options_layout_.rows[static_cast<std::size_t>(row)].what;
+	switch (what)
+	{
+	case OptionChoice::always_ask:
+		options_state_.always_ask = !options_state_.always_ask;
+		break;
+	case OptionChoice::silent_yofy:
+		options_state_.silent_yofy = !options_state_.silent_yofy;
+		break;
+	case OptionChoice::mark:
+		options_state_.mark = !options_state_.mark;
+		break;
+	case OptionChoice::propose_last:
+		options_state_.propose_last = !options_state_.propose_last;
+		break;
+	case OptionChoice::regexs:
+		options_state_.regexs = !options_state_.regexs;
+		break;
+	case OptionChoice::to_confirm_abbr:
+		options_state_.to_confirm_abbr = !options_state_.to_confirm_abbr;
+		break;
+	case OptionChoice::dictionary:
+		pick_dictionary(false);
+		break;
+	case OptionChoice::regex_dictionary:
+		pick_dictionary(true);
+		break;
+	case OptionChoice::font_smaller: // строка «Размер текста»: Enter — крупнее
+		options_font_step(1);
+		return;
+	default:
+		break;
+	}
+	options_sync_view();
+	invalidate();
+}
+
+void App::options_apply(bool remember)
+{
+	const bool yofy_changed = mark_ != options_state_.mark ||
+		propose_last_ != options_state_.propose_last || regexs_ != options_state_.regexs ||
+		to_confirm_abbr_ != options_state_.to_confirm_abbr;
+
+	always_ask_ = options_state_.always_ask;
+	silent_yofy_ = options_state_.silent_yofy;
+	mark_ = options_state_.mark;
+	propose_last_ = options_state_.propose_last;
+	regexs_ = options_state_.regexs;
+	to_confirm_abbr_ = options_state_.to_confirm_abbr;
+
+	if (yofy_)
+	{
+		set_always_ask(always_ask_);
+		set_silent_yofy(silent_yofy_);
+		if (yofy_changed)
+			yofy_.reset(); // опции читаются при создании движка
+	}
+
+	if (std::abs(options_state_.font_size - font_size_) > 0.01F &&
+		renderer_.set_font_size(options_state_.font_size, hwnd_))
+		font_size_ = renderer_.font_size();
+
+	options_open_ = false;
+	if (remember)
+		save_settings();
+	refresh_view();
+	find_sync_view();
+	invalidate();
+}
+
+bool App::pick_dictionary(bool regex_dict)
+{
+	std::vector<wchar_t> file(32768, L'\0');
+	const std::wstring current = regex_dict ? regex_setting_ : dict_setting_;
+	if (!current.empty())
+	{
+		const std::size_t n = std::min(current.size(), file.size() - 1);
+		std::copy_n(current.begin(), static_cast<std::ptrdiff_t>(n), file.begin());
+	}
+	OPENFILENAMEW ofn{};
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hwnd_;
+	ofn.lpstrFilter = L"Словари (*.dat)\0*.dat\0Все файлы\0*.*\0";
+	ofn.lpstrFile = file.data();
+	ofn.nMaxFile = static_cast<DWORD>(file.size());
+	ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+	if (GetOpenFileNameW(&ofn) == FALSE)
+		return false;
+
+	const std::filesystem::path path(file.data());
+	// Файл рядом с программой храним коротким именем — как в yo.ini
+	// оригинала, где стоит просто «yox.dat».
+	std::wstring stored = path.wstring();
+	std::error_code ec;
+	const std::filesystem::path rel = std::filesystem::relative(path, program_dir(), ec);
+	if (!ec && !rel.empty() && rel.native().rfind(L"..", 0) != 0)
+		stored = rel.wstring();
+
+	if (regex_dict)
+	{
+		regex_setting_ = stored;
+		options_state_.regex_dictionary = narrow(stored);
+	}
+	else
+	{
+		dict_setting_ = stored;
+		options_state_.dictionary = narrow(stored);
+	}
+	options_sync_view();
+	invalidate();
+	return true;
+}
+
+void App::reload_dictionaries()
+{
+	yofy_.reset(); // следующий вызов загрузит словари заново, уже по новым путям
+	if (!ensure_yoficator())
+		return;
+	save_settings();
+	refresh_view();
+}
+
+void App::clear_user_selection()
+{
+	if (!dict_)
+	{
+		// Словарь ещё не загружен: подгрузим, чтобы сброс было к чему применить.
+		if (!ensure_yoficator() || !dict_)
+			return;
+	}
+	dict_->reset_user_sel();
+	if (yofy_)
+		yofy_.reset(); // сбросить кешированный разбор
+	invalidate();
+}
+
+// ---------------------------------------------------------------- последние файлы
+
+std::string App::mru_flags() const
+{
+	// Буквы — как в Files.NameN оригинала: u — UTF-8, U — UTF-16LE,
+	// S — BOM. CP1251 пишется без флагов (кодировка по умолчанию).
+	std::string flags;
+	if (enc_ == Encoding::utf8)
+		flags += 'u';
+	else if (is_utf16(enc_))
+		flags += 'U';
+	if (bom_)
+		flags += 'S';
+	return flags;
+}
+
+bool App::mru_decode_flags(std::string_view flags, Encoding& enc, bool& bom)
+{
+	if (flags.find('R') != std::string_view::npos)
+		return false; // RTF открываем как текст, кодировку не навязываем
+	if (flags.find('u') != std::string_view::npos)
+		enc = Encoding::utf8;
+	else if (flags.find('U') != std::string_view::npos)
+		enc = Encoding::utf16le;
+	else
+		return false;
+	bom = flags.find('S') != std::string_view::npos;
+	return true;
+}
+
+void App::mru_touch(const std::filesystem::path& path, std::size_t position)
+{
+	if (path.empty())
+		return;
+	const std::string utf8_path = path_utf8(path);
+	last_file_index_ = mru_.add(MruEntry{ utf8_path, position, mru_flags() });
+	build_menus();
+	update_menu_checks();
+	layout_menus();
+}
+
+void App::mru_remember_current()
+{
+	if (path_.empty() || buf_ == nullptr || ed_ == nullptr)
+		return;
+	mru_.remember(path_utf8(path_), ed_->caret(), mru_flags());
+}
+
+void App::clear_mru()
+{
+	if (mru_.empty())
+		return;
+	if (MessageBoxW(hwnd_, L"Очистить список последних файлов?", L"Ё",
+					MB_YESNO | MB_ICONQUESTION) != IDYES)
+		return;
+	mru_.clear();
+	last_file_index_ = 0;
+	build_menus();
+	update_menu_checks();
+	layout_menus();
+	save_settings();
+	invalidate();
+}
+
+bool App::open_mru(std::size_t index)
+{
+	const MruEntry* entry = mru_.at(index);
+	if (entry == nullptr)
+		return false;
+	const std::string utf8_path = entry->path;
+	const std::size_t position = entry->position;
+	const std::string flags = entry->flags;
+	const std::filesystem::path path(widen(utf8_path));
+
+	std::error_code ec;
+	if (!std::filesystem::exists(path, ec))
+	{
+		const std::wstring question = L"Файл не найден:\n" + path.wstring() +
+			L"\n\nУбрать его из списка последних файлов?";
+		if (MessageBoxW(hwnd_, question.c_str(), L"Ё", MB_YESNO | MB_ICONWARNING) == IDYES)
+		{
+			mru_.remove(utf8_path);
+			if (mru_.empty())
+				last_file_index_ = 0;
+			build_menus();
+			update_menu_checks();
+			layout_menus();
+			save_settings();
+			invalidate();
+		}
+		return false;
+	}
+	if (!ask_save_changes())
+		return false;
+	mru_remember_current();
+
+	Encoding enc = Encoding::utf8;
+	bool bom = false;
+	const bool forced = mru_decode_flags(flags, enc, bom) && !is_rtf_path(path);
+	const bool ok = forced ? load_forced(path, enc, bom) : load_from_path(path);
+	if (!ok)
+		return false;
+
+	// Позицию курсора восстанавливаем, как GoAndShowPosition оригинала.
+	// После открытия список мог обновиться — индекс ищем заново.
+	ed_->set_caret(std::min(position, buf_->size()));
+	caret_on_ = true;
+	if (const std::size_t at = mru_.find(utf8_path); at < kMruMax)
+		last_file_index_ = at;
+	refresh_view();
+	return true;
+}
+
 void App::mark_yofy_changes(std::size_t from, std::size_t to)
 {
 	yofy_marks_.clear();
@@ -2519,6 +3115,61 @@ void App::show_file_props()
 	text += eol_name(eol_);
 	text += L"\nИзменён: ";
 	text += buf_->modified() ? L"да" : L"нет";
+	// Символы и степень ёфикации — как CalculateFileProp оригинала, но с
+	// исправленной формулой (FEATURES.md §12.2: nYo/(nYe+nYo), а не nYo*1500/nYe).
+	std::uint64_t cyrillic = 0;
+	std::uint64_t ye = 0;
+	std::uint64_t yo = 0;
+	{
+		const std::size_t chunk = 1U << 16;
+		std::string data;
+		for (std::size_t pos = 0; pos < buf_->size();)
+		{
+			const std::size_t take = std::min(chunk, buf_->size() - pos);
+			buf_->read(pos, take, data);
+			for (std::size_t i = 0; i + 1 < data.size(); ++i)
+			{
+				const auto c0 = static_cast<unsigned char>(data[i]);
+				const auto c1 = static_cast<unsigned char>(data[i + 1]);
+				if (c0 == 0xD1U && c1 == 0x91U) // ё
+				{
+					++yo;
+					++cyrillic;
+				}
+				else if (c0 == 0xD0U && c1 == 0x81U) // Ё
+				{
+					++yo;
+					++cyrillic;
+				}
+				else if (c0 == 0xD0U && (c1 == 0xB5U || c1 == 0x95U)) // е / Е
+				{
+					++ye;
+					++cyrillic;
+				}
+				else if (c0 == 0xD0U && c1 >= 0x90U && c1 <= 0xBFU)
+					++cyrillic; // остальная кириллица (А-я)
+			}
+			pos += take;
+		}
+	}
+	const std::uint64_t letters = ye + yo;
+	const std::uint64_t degree = letters > 0 ? (yo * 100 + letters / 2) / letters : 0;
+	text += L"\nКириллицы: ";
+	text += std::to_wstring(cyrillic);
+	text += L"   «е»: ";
+	text += std::to_wstring(ye);
+	text += L"   «ё»: ";
+	text += std::to_wstring(yo);
+	text += L"\nСтепень ёфикации: ";
+	text += std::to_wstring(degree);
+	text += L"% — ";
+	if (degree == 0)
+		text += L"не ёфицировано";
+	else if (degree < 75)
+		text += L"возможно, ёфицировано не полностью";
+	else
+		text += L"возможно, ёфицировано";
+
 	if (last_yofy_.lines > 0)
 	{
 		text += L"\n\nПоследняя ёфикация: замен ";
@@ -2628,8 +3279,8 @@ bool App::ensure_yoficator()
 
 void App::run_yofification()
 {
-	if (yofy_busy_ || ask_.active)
-		return; // проход уже идёт: повторный вход сломал бы состояние
+	if (yofy_busy_ || ask_.active || options_open_)
+		return; // проход уже идёт (или открыты настройки): повторный вход сломал бы состояние
 	if (readonly_)
 	{
 		MessageBeep(MB_ICONASTERISK);
@@ -2669,9 +3320,10 @@ void App::run_yofification()
 		},
 		[this] { return pump_cancel(); });
 	yofy_busy_ = false;
-	trace("ёфикация", std::chrono::duration<double, std::milli>(
-						  std::chrono::steady_clock::now() - started).count(),
-		  to - from);
+	last_stats_ = yofy_->stats();
+	last_yofy_ms_ = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - started).count();
+	trace("ёфикация", last_yofy_ms_, to - from);
 	SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
 
 	// Нажали «закрыть» посреди прохода — доводим закрытие до конца.
@@ -3152,6 +3804,7 @@ void App::set_document(std::shared_ptr<TextBuffer> buf, const std::filesystem::p
 
 void App::new_document()
 {
+	mru_remember_current(); // позиция покидаемого файла — в MRU
 	set_document(std::make_shared<TextBuffer>(), {}, Encoding::utf8, false);
 }
 
@@ -3181,6 +3834,7 @@ bool App::load_from_path(const std::filesystem::path& path)
 		}
 		set_document(std::make_shared<TextBuffer>(mapped), path, info.enc, info.bom);
 		readonly_ = is_rtf_path(path);
+		mru_touch(path, 0);
 		return true;
 	}
 
@@ -3235,6 +3889,7 @@ bool App::load_forced(const std::filesystem::path& path, Encoding enc, bool bom)
 	set_document(std::make_shared<TextBuffer>(std::make_shared<MemorySource>(std::move(text))), path, enc,
 				 bom);
 	readonly_ = is_rtf_path(path);
+	mru_touch(path, 0);
 	return true;
 }
 
@@ -3325,6 +3980,7 @@ void App::ask_current_word()
 
 bool App::open_dialog()
 {
+	mru_remember_current();
 	std::vector<wchar_t> file(32768, L'\0');
 	OPENFILENAMEW ofn{};
 	ofn.lStructSize = sizeof(ofn);
@@ -3411,7 +4067,11 @@ bool App::save_as()
 	if (GetSaveFileNameW(&ofn) == FALSE)
 		return false;
 	path_ = std::filesystem::path(file.data());
-	return write_document(path_);
+	if (!write_document(path_))
+		return false;
+	mru_touch(path_, ed_ ? ed_->caret() : 0);
+	update_title();
+	return true;
 }
 
 bool App::ask_save_changes()
@@ -3556,6 +4216,8 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		SetFocus(hwnd_);
 		if (menu_click(x, y))
 			return 0;
+		if (options_click(x, y))
+			return 0;
 		if (find_click(x, y))
 			return 0;
 		on_lbutton_down(x, y, extend);
@@ -3592,6 +4254,8 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
 		SetCursor(LoadCursorW(nullptr, y < renderer_.bar_height() ? IDC_ARROW : IDC_IBEAM));
 		if (menu_mouse_move(x, y))
+			return 0;
+		if (options_mouse_move(x, y))
 			return 0;
 		if (find_mouse_move(x, y))
 			return 0;

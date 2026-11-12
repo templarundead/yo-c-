@@ -463,6 +463,83 @@ void Renderer::draw_marks(Editor& ed, float scroll_x, float scroll_y, float text
 	}
 }
 
+void Renderer::draw_options(const OptionsView& view)
+{
+	if (rt_ == nullptr || fmt_ui_ == nullptr || fmt_center_ == nullptr || brush_ == nullptr)
+		return;
+
+	// Затемнение документа под окном: видно, что ввод ждут здесь.
+	if (dim_brush_ != nullptr)
+		rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, width_dip_, height_dip_), dim_brush_);
+
+	brush_->SetColor(theme_.gutter);
+	rt_->FillRectangle(view.rect, brush_);
+	brush_->SetColor(theme_.accent);
+	rt_->DrawRectangle(view.rect, brush_, 1.0F);
+
+	// Заголовок.
+	brush_->SetColor(theme_.text);
+	rt_->DrawTextW(view.title.c_str(), static_cast<UINT32>(view.title.size()), fmt_ui_,
+				   D2D1::RectF(view.rect.left + 14.0F, view.rect.top + 8.0F, view.rect.right - 14.0F,
+							   view.rect.top + 28.0F),
+				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+	for (std::size_t i = 0; i < view.rows.size(); ++i)
+	{
+		const OptionsRowView& row = view.rows[i];
+		if (static_cast<int>(i) == view.focus)
+		{
+			brush_->SetColor(theme_.selection);
+			rt_->FillRectangle(row.rect, brush_);
+		}
+		float x = row.rect.left + 2.0F;
+		if (row.check)
+		{
+			// Галочка: рамка и «×» внутри — тот же вид, что у кнопок панели.
+			const float box = std::max(12.0F, row.rect.bottom - row.rect.top - 8.0F);
+			const float top = row.rect.top + (row.rect.bottom - row.rect.top - box) * 0.5F;
+			const D2D1_RECT_F mark_rect = D2D1::RectF(x, top, x + box, top + box);
+			brush_->SetColor(theme_.status_fg);
+			rt_->DrawRectangle(mark_rect, brush_, 1.0F);
+			if (row.checked)
+			{
+				const std::wstring tick = L"×";
+				brush_->SetColor(theme_.text);
+				rt_->DrawTextW(tick.c_str(), static_cast<UINT32>(tick.size()), fmt_center_, mark_rect,
+							   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+			}
+			x += box + 8.0F;
+		}
+		brush_->SetColor(row.path ? theme_.accent : theme_.text);
+		const float value_w = row.value.empty() ? 0.0F : measure_ui(row.value) + 10.0F;
+		rt_->DrawTextW(row.label.c_str(), static_cast<UINT32>(row.label.size()), fmt_ui_,
+					   D2D1::RectF(x, row.rect.top, std::max(x + 10.0F, row.rect.right - value_w),
+								   row.rect.bottom),
+					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		if (!row.value.empty())
+		{
+			brush_->SetColor(row.path ? theme_.status_fg : theme_.text);
+			rt_->DrawTextW(row.value.c_str(), static_cast<UINT32>(row.value.size()), fmt_ui_,
+						   D2D1::RectF(row.rect.right - value_w, row.rect.top, row.rect.right,
+									   row.rect.bottom),
+						   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		}
+	}
+
+	for (std::size_t i = 0; i < view.buttons.size(); ++i)
+	{
+		const OptionsButtonView& b = view.buttons[i];
+		const bool lit = static_cast<int>(i) == view.hot || b.primary;
+		brush_->SetColor(lit ? theme_.selection : theme_.status_bg);
+		rt_->FillRectangle(b.rect, brush_);
+		brush_->SetColor(lit ? theme_.accent : theme_.status_fg);
+		rt_->DrawRectangle(b.rect, brush_, 1.0F);
+		brush_->SetColor(theme_.text);
+		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_, b.rect, brush_,
+					   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+	}
+}
+
 float Renderer::measure_ask(const std::wstring& text)
 {
 	if (dwrite_ == nullptr || fmt_ask_ == nullptr || text.empty())
@@ -706,7 +783,8 @@ void Renderer::draw_ask(const AskView& view)
 void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* find, bool caret,
 					 const AskView* ask, const MenuBarView* bar,
 					 const std::vector<std::pair<std::size_t, std::size_t>>& marks,
-					 const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks)
+					 const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks,
+					 const OptionsView* options)
 {
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
@@ -936,6 +1014,8 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		draw_ask(*ask);
 	if (bar != nullptr)
 		draw_menu_bar(*bar);
+	if (options != nullptr)
+		draw_options(*options);
 
 	const HRESULT hr = rt_->EndDraw();
 	if (hr == D2DERR_RECREATE_TARGET)

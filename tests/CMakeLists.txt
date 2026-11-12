@@ -9,6 +9,8 @@ add_executable(yo_tests
 	test_askpanel.cpp
 	test_ini.cpp
 	test_find.cpp
+	test_mru.cpp
+	test_optionspanel.cpp
 )
 
 target_link_libraries(yo_tests PRIVATE yo::core Catch2::Catch2WithMain)

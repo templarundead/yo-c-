@@ -67,6 +67,36 @@ struct FindBarView
 	std::vector<FindBarButtonView> buttons;
 };
 
+// Окно настроек: строки (галочки, ссылки на файлы словарей, размер текста)
+// и кнопки. Геометрию считает ядро (yo::layout_options), здесь — только вид.
+struct OptionsRowView
+{
+	D2D1_RECT_F rect{};
+	std::wstring label;
+	std::wstring value;
+	bool check = false;
+	bool checked = false;
+	bool path = false;
+};
+
+struct OptionsButtonView
+{
+	D2D1_RECT_F rect{};
+	std::wstring label;
+	int choice = 0;
+	bool primary = false;
+};
+
+struct OptionsView
+{
+	D2D1_RECT_F rect{};
+	std::wstring title;
+	std::vector<OptionsRowView> rows;
+	std::vector<OptionsButtonView> buttons;
+	int focus = -1;	 // строка под курсором/выбранная клавиатурой
+	int hot = -1;	 // кнопка под мышью
+};
+
 // Тон кнопки панели: «Е» — синяя, «Ё» — зелёная, остальные — системные.
 enum class AskTone : std::uint8_t
 {
@@ -188,7 +218,8 @@ public:
 	void paint(Editor& ed, const std::wstring& status, const FindBarView* find, bool caret,
 			   const AskView* ask = nullptr, const MenuBarView* bar = nullptr,
 			   const std::vector<std::pair<std::size_t, std::size_t>>& marks = {},
-			   const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks = {});
+			   const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks = {},
+			   const OptionsView* options = nullptr);
 
 	[[nodiscard]] float text_area_width() const noexcept;
 	[[nodiscard]] float text_area_height() const noexcept;
@@ -205,6 +236,7 @@ private:
 	bool create_render_target(HWND hwnd);
 	void draw_status(const std::wstring& status);
 	void draw_find_bar(const FindBarView& view);
+	void draw_options(const OptionsView& view);
 	void draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
 					const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color);
 	void draw_ask(const AskView& view);
