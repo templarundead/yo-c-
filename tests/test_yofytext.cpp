@@ -414,3 +414,81 @@ TEST_CASE("пометки ёфикации: откат снимает и зам�
 		CHECK((ch == "ё" || ch == "Ё"));
 	}
 }
+
+TEST_CASE("ёфикация не портит текст: меняются только е и ё", "[yofytext]")
+{
+	// Текст из жалобы: строки с неоднозначными словами и с контекстом РВ стоят
+	// рядом со строками без замен. Раньше в собранный текст попадало содержимое
+	// соседней строки (вид из line_text затирался вызовом из движка во время
+	// разбора), и документ ломался: строки склеивались, буквы пропадали.
+	const std::string text =
+		"Постой, не уходи!\n\n"
+		"Мы ждали лета – пришла зима\n\n"
+		"Мы заходили в дома,\n\n"
+		"Но в домах шел снег\n\n"
+		"Мы ждали завтрашний день,\n\n"
+		"Каждый день ждали завтрашний день\n\n"
+		"Мы прячем глаза за шторами век\n\n"
+		"В наших глазах крики \"вперед!\"\n\n"
+		"В наших глазах окрики \"стой!\"\n\n"
+		"В наших глазах рождение дня\n\n"
+		"И смерть огня\n\n"
+		"В наших глазах звездная ночь,\n\n"
+		"Мы хотели пить, не было воды\n\n"
+		"Мы хотели света, не было звезды\n\n"
+		"Мы выходили под дождь\n\n"
+		"И пили воду из луж\n\n"
+		"Мы носили траур, оркестр играл туш…\n";
+
+	// Разрешена только замена одного символа е/Е <-> ё/Ё: ни сдвигов, ни
+	// пропавших букв, ни текста из других строк.
+	const auto only_ye_yo = [](const UString& before, const UString& after)
+	{
+		if (before.size() != after.size())
+			return false;
+		for (std::size_t i = 0; i < before.size(); ++i)
+		{
+			if (before[i] == after[i])
+				continue;
+			const bool swap = (before[i] == U'е' && after[i] == U'ё') ||
+							  (before[i] == U'Е' && after[i] == U'Ё') ||
+							  (before[i] == U'ё' && after[i] == U'е') ||
+							  (before[i] == U'Ё' && after[i] == U'Е');
+			if (!swap)
+				return false;
+		}
+		return true;
+	};
+
+	for (const bool no_var_only : { false, true })
+	{
+		INFO("no_var_only=" << no_var_only);
+		Engine e;
+		Options opts;
+		opts.no_var_only = no_var_only;
+		e.yofy.set_options(opts);
+
+		auto buf = tb(text);
+		const std::size_t lines_before = buf->line_count();
+		const YofyResult r = yofify_document(*buf, 0, buf->size(), e.yofy, 2048);
+		INFO(buf->text());
+		CHECK(r.changed);
+		CHECK(buf->line_count() == lines_before);
+		REQUIRE(buf->text().size() == text.size());
+
+		// Построчно: содержимое на месте, отличаются только е/ё.
+		auto src = tb(text);
+		for (std::size_t i = 0; i < src->line_count(); ++i)
+		{
+			const UString was = decode_line(
+				{ reinterpret_cast<const std::uint8_t*>(src->line_text(i).data()), src->line_text(i).size() },
+				Encoding::utf8);
+			const std::string after_bytes(buf->line_text(i));
+			const UString now = decode_line(
+				{ reinterpret_cast<const std::uint8_t*>(after_bytes.data()), after_bytes.size() },
+				Encoding::utf8);
+			INFO("строка " << i);
+			CHECK(only_ye_yo(was, now));
+		}
+	}
+}

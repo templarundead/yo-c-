@@ -30,7 +30,11 @@ const UString* BufferLineSource::line(std::size_t index) const
 		return nullptr;
 	if (const auto it = cache_.find(index); it != cache_.end())
 		return &it->second;
-	const std::string_view bytes = buf_.line_text(index);
+	// Копия, а не line_text: тот отдаёт вид на общий scratch_, а движок
+	// запрашивает соседние строки прямо во время разбора текущей. Вид
+	// оказывался перезаписан чужой строкой ещё до использования.
+	std::string bytes;
+	buf_.read(buf_.line_start(index), buf_.line_end(index) - buf_.line_start(index), bytes);
 	UString text = decode_line({ reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size() },
 							   Encoding::utf8);
 	const auto [it, ok] = cache_.emplace(index, std::move(text));
@@ -117,7 +121,17 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 			result.cancelled = true;
 			break;
 		}
-		const std::string_view bytes = buf.line_text(i);
+		// Владеющая копия строки: line_text отдаёт вид на общий scratch_, а
+		// yofy.process_line() ниже запрашивает у источника соседние строки —
+		// это вызывает line_text() и затирает вид. Раньше в new_lines попадал
+		// текст чужой строки, и документ после ёфикации ломался.
+		const std::string bytes = [&]
+		{
+			std::string tmp;
+			const std::size_t start = buf.line_start(i);
+			buf.read(start, buf.line_end(i) - start, tmp);
+			return tmp;
+		}();
 		const UString before = decode_line({ reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size() },
 										   Encoding::utf8);
 		const std::size_t replaced_before = result.replaced;
