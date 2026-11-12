@@ -437,27 +437,30 @@ void Renderer::draw_marks(Editor& ed, float scroll_x, float scroll_y, float text
 	if (rt_ == nullptr || brush_ == nullptr || marks.empty())
 		return;
 	const float lh = std::max(1.0F, ed.metrics().line_height);
-	const std::size_t first = ed.first_visible_line();
-	const std::size_t count = ed.visible_line_count();
 	brush_->SetColor(color);
-	for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+	// Ряды: без переноса ряд совпадает с логической строкой, с переносом
+	// подсветка режется по видимым рядам.
+	for (const Editor::Row& row : ed.visible_rows())
 	{
-		const std::size_t line_start = ed.buffer().line_start(i);
-		const std::size_t line_len = ed.buffer().line_text(i).size();
-		const std::size_t line_end = line_start + line_len;
-		const float y = bar_h_ + ed.line_top(i) - scroll_y;
+		const std::size_t line_start = ed.buffer().line_start(row.line);
+		const std::size_t line_len = ed.buffer().line_text(row.line).size();
+		const std::size_t row_start = line_start + row.from;
+		const std::size_t row_end = line_start + std::min(row.to, line_len);
+		const float y = bar_h_ + row.top - scroll_y;
 		if (y + lh < bar_h_ || y > bar_h_ + text_h)
 			continue;
 		for (const auto& [from, to] : marks)
 		{
-			if (to <= line_start || from >= line_end)
+			if (to <= row_start || from >= row_end)
 				continue;
-			const std::size_t a = from > line_start ? from - line_start : 0;
-			const std::size_t b = std::min(to - line_start, line_len);
+			if (row_end <= row_start)
+				continue;
+			const std::size_t a = from > row_start ? from - line_start : row.from;
+			const std::size_t b = std::min(to - line_start, row.to);
 			if (b <= a)
 				continue;
-			const float x1 = text_x0() + ed.prefix_width(i, a) - scroll_x;
-			const float x2 = text_x0() + ed.prefix_width(i, b) - scroll_x;
+			const float x1 = text_x0() + ed.row_width(row, a) - scroll_x;
+			const float x2 = text_x0() + ed.row_width(row, b) - scroll_x;
 			rt_->FillRectangle(D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F), brush_);
 		}
 	}
@@ -575,23 +578,22 @@ void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, f
 	if (rt_ == nullptr || brush_ == nullptr || from >= to)
 		return;
 	const float lh = std::max(1.0F, ed.metrics().line_height);
-	const std::size_t first = ed.first_visible_line();
-	const std::size_t count = ed.visible_line_count();
 	brush_->SetColor(D2D1::ColorF(0.72F, 0.16F, 0.16F, 0.85F)); // как «красное» слово оригинала
-	for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+	for (const Editor::Row& row : ed.visible_rows())
 	{
-		const std::size_t line_start = ed.buffer().line_start(i);
-		const std::size_t line_len = ed.buffer().line_text(i).size();
-		const std::size_t line_end = line_start + line_len;
-		if (line_end < from || line_start > to)
+		const std::size_t line_start = ed.buffer().line_start(row.line);
+		const std::size_t line_len = ed.buffer().line_text(row.line).size();
+		const std::size_t row_start = line_start + row.from;
+		const std::size_t row_end = line_start + std::min(row.to, line_len);
+		if (row_end <= row_start || row_end < from || row_start > to)
 			continue;
-		const std::size_t a = from > line_start ? from - line_start : 0;
-		const std::size_t b = std::min(to - line_start, line_len);
+		const std::size_t a = from > row_start ? from - line_start : row.from;
+		const std::size_t b = std::min(to - line_start, row.to);
 		if (b <= a)
 			continue;
-		const float x1 = text_x0() + ed.prefix_width(i, a) - scroll_x;
-		const float x2 = text_x0() + ed.prefix_width(i, b) - scroll_x;
-		const float y = bar_h_ + ed.line_top(i) - scroll_y;
+		const float x1 = text_x0() + ed.row_width(row, a) - scroll_x;
+		const float x2 = text_x0() + ed.row_width(row, b) - scroll_x;
+		const float y = bar_h_ + row.top - scroll_y;
 		if (y + lh < bar_h_ || y > bar_h_ + text_h)
 			continue;
 		rt_->FillRectangle(D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F), brush_);
@@ -808,8 +810,9 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	const float lh = ed.metrics().line_height;
 	const float cw = ed.metrics().char_width;
 
-	const std::size_t first = ed.first_visible_line();
-	const std::size_t count = ed.visible_line_count();
+	// Видимые ряды: без переноса ряд = логическая строка, с переносом
+	// (WordWrap) одна строка занимает несколько рядов.
+	const std::vector<Editor::Row> rows = ed.visible_rows();
 
 	// Подсветка ёфикационных замен (как Mark оригинала) и найденного —
 	// под выделением и под текстом.
@@ -822,24 +825,26 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		const std::size_t sel_a = ed.sel_begin();
 		const std::size_t sel_b = ed.sel_end();
 		brush_->SetColor(theme_.selection);
-		for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+		for (const Editor::Row& row : rows)
 		{
-			const std::size_t line_start = ed.buffer().line_start(i);
-			const std::size_t line_len = ed.buffer().line_text(i).size();
+			const std::size_t line_start = ed.buffer().line_start(row.line);
+			const std::size_t line_len = ed.buffer().line_text(row.line).size();
 			const std::size_t line_end = line_start + line_len;
-			if (line_end < sel_a || line_start > sel_b)
+			const std::size_t row_start = line_start + row.from;
+			const std::size_t row_end = line_start + std::min(row.to, line_len);
+			if (row_end < sel_a || row_start > sel_b)
 				continue;
-			const std::size_t from = sel_a > line_start ? sel_a - line_start : 0;
-			const std::size_t to = std::min(sel_b - line_start, line_len);
-			float x1 = text_x0() + ed.prefix_width(i, from) - scroll_x;
-			float x2 = text_x0() + ed.prefix_width(i, to) - scroll_x;
-			if (sel_b > line_end && to == line_len)
+			const std::size_t from = sel_a > row_start ? sel_a - line_start : row.from;
+			const std::size_t to = std::min(sel_b - line_start, row.to);
+			float x1 = text_x0() + ed.row_width(row, from) - scroll_x;
+			float x2 = text_x0() + ed.row_width(row, to) - scroll_x;
+			if (sel_b > line_end && to == line_len && row.last_of_line)
 				x2 += cw * 0.5F; // выделение «через» перевод строки видно
 			if (x2 < text_x0() - scroll_x)
 				x2 = text_x0() - scroll_x;
 			if (x1 > width_dip_)
 				continue;
-			const float y = text_y0 + ed.line_top(i) - scroll_y;
+			const float y = text_y0 + row.top - scroll_y;
 			rt_->FillRectangle(D2D1::RectF(std::max(x1, text_x0() - scroll_x), y + 1.0F,
 										   std::max(x2, x1 + 1.0F), y + lh - 1.0F),
 							   brush_);
@@ -853,12 +858,14 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	if (gutter_w_ > 0.0F && fmt_ui_ != nullptr)
 	{
 		brush_->SetColor(theme_.status_fg);
-		for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+		for (const Editor::Row& row : rows)
 		{
-			const float line_y = text_y0 + ed.line_top(i) - scroll_y;
+			if (!row.first_of_line)
+				continue; // при переносе номер — только у первого ряда
+			const float line_y = text_y0 + row.top - scroll_y;
 			if (line_y > text_y0 + text_h || line_y + lh < text_y0)
 				continue;
-			const std::wstring num = std::to_wstring(i + 1);
+			const std::wstring num = std::to_wstring(row.line + 1);
 			rt_->DrawTextW(num.c_str(), static_cast<UINT32>(num.size()), fmt_right_, 
 						   D2D1::RectF(0.0F, line_y, text_x0() - 4.0F, line_y + lh), brush_,
 						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -869,27 +876,31 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	for (CachedLine& c : cache_)
 		c.used = false;
 	brush_->SetColor(theme_.text);
-	for (std::size_t i = first; i < first + count && i < ed.buffer().line_count(); ++i)
+	for (const Editor::Row& row : rows)
 	{
+		const std::size_t i = row.line;
 		const std::string_view bytes = ed.buffer().line_text(i);
-		if (bytes.empty())
+		if (bytes.empty() || row.to <= row.from)
 			continue;
-		const float line_y = text_y0 + ed.line_top(i) - scroll_y;
+		const float line_y = text_y0 + row.top - scroll_y;
 		if (line_y > text_h || line_y + lh < 0.0F)
 			continue; // строка за пределами окна — раскладку не строим
 		// Ширина текста для горизонтальной прокрутки уточняется по видимым
 		// строкам: полный проход по гигабайтному файлу недопустим.
-		ed.note_line_cells(ed.prefix_cells(i, bytes.size()));
+		if (!ed.word_wrap())
+			ed.note_line_cells(ed.prefix_cells(i, bytes.size()));
 
 		// Длинную строку раскладываем только видимым окном символов: иначе
 		// DWrite формирует и растеризует всю строку при каждой перерисовке
 		// (а курсор мигает дважды в секунду) — окно «замирает» на длинных
 		// строках, что и выглядело как зависание после вставки.
-		std::size_t from_byte = 0;
+		std::size_t from_byte = row.from;
+		std::size_t to_byte = std::min(row.to, bytes.size());
 		std::wstring wide;
-		if (bytes.size() <= kLineSliceBytes)
+		if (ed.word_wrap() || bytes.size() <= kLineSliceBytes)
 		{
-			wide = utf8_to_wide(bytes);
+			// При переносе ряд короткий (не длиннее предела раскладки).
+			wide = utf8_to_wide(bytes.substr(from_byte, to_byte - from_byte));
 		}
 		else
 		{
@@ -901,7 +912,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 			// Срез может начинаться посреди символа — сдвигаем к его началу.
 			while (from_byte < bytes.size() && (static_cast<unsigned char>(bytes[from_byte]) & 0xC0U) == 0x80U)
 				++from_byte;
-			const std::size_t to_byte = std::min(std::max(b1, from_byte), bytes.size());
+			to_byte = std::min(std::max(b1, from_byte), bytes.size());
 			wide = utf8_to_wide(bytes.substr(from_byte, to_byte - from_byte));
 		}
 		if (wide.empty())
@@ -968,7 +979,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		if (slot->layout == nullptr)
 			continue;
 		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
-		const float slice_x = ed.prefix_width(i, from_byte);
+		const float slice_x = ed.row_width(row, from_byte);
 		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + slice_x - scroll_x, line_y), slot->layout, brush_,
 							D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}

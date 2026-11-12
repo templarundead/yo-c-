@@ -14,9 +14,11 @@
 #include "yo/textbuf.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace yo {
 
@@ -116,6 +118,36 @@ public:
 	// клика на 2*scroll_y/lh строк — «выделение съезжало»).
 	[[nodiscard]] std::size_t offset_at_client(float screen_x, float screen_y,
 											  float padding_x = 0.0F) const;
+	// --- перенос по словам (WordWrap, по умолчанию выключен) ---
+	// При включённом переносе логическая строка занимает несколько визуальных
+	// рядов; раскладка по-прежнему детерминирована (моноширинный шрифт), а
+	// длина строки ограничена: слишком длинные строки не переносятся, чтобы
+	// перерисовка не превращалась в проход по мегабайту символов.
+	void set_word_wrap(bool on);
+	[[nodiscard]] bool word_wrap() const noexcept { return wrap_; }
+	[[nodiscard]] std::size_t wrap_cells() const noexcept { return wrap_cells_; }
+
+	// Визуальный ряд: часть строки с [from, to) и её координата по вертикали.
+	struct Row
+	{
+		std::size_t line = 0;
+		std::size_t from = 0;
+		std::size_t to = 0;
+		float top = 0.0F;
+		bool first_of_line = true;
+		bool last_of_line = true;
+	};
+
+	// Ряды, попадающие во вьюпорт (в режиме без переноса — видимые строки).
+	[[nodiscard]] std::vector<Row> visible_rows() const;
+	[[nodiscard]] std::size_t first_visible_row() const;
+	[[nodiscard]] std::size_t visible_row_count() const;
+	[[nodiscard]] std::size_t row_count() const; // всего рядов
+	[[nodiscard]] std::size_t row_of_offset(std::size_t offset) const;
+	// Клетки/ширина от начала ряда до байта byte_in_line той же строки.
+	[[nodiscard]] std::size_t row_cells(const Row& row, std::size_t byte_in_line) const;
+	[[nodiscard]] float row_width(const Row& row, std::size_t byte_in_line) const;
+
 	// Ширина префикса строки до байта `byte_in_line` в пикселях.
 	[[nodiscard]] float prefix_width(std::size_t line, std::size_t byte_in_line) const;
 	// «Клетки» (символьные колонки) строки до байта byte_in_line.
@@ -124,12 +156,23 @@ public:
 private:
 	void move_vertically(long lines, bool extend);
 	void ensure_caret_visible_impl();
-	[[nodiscard]] std::size_t line_of_offset(std::size_t offset) const;
 	[[nodiscard]] std::size_t clamp_offset(std::size_t offset) const;
 	[[nodiscard]] std::size_t clamp_scroll_y(float y) const;
 	[[nodiscard]] std::size_t cells_to_byte(std::size_t line, std::size_t cells) const;
 	void after_edit(std::size_t caret);
 	void invalidate_width();
+
+	// --- ряды переноса ---
+	struct Segment
+	{
+		std::size_t from = 0;
+		std::size_t to = 0;
+	};
+	[[nodiscard]] std::vector<Segment> line_segments(std::size_t line) const;
+	[[nodiscard]] std::size_t rows_of_line(std::size_t line) const;
+	void ensure_row_prefix(std::size_t line) const;
+	void invalidate_rows(std::size_t from_line = 0) const;
+	[[nodiscard]] std::size_t line_of_row(std::size_t row) const;
 
 	std::shared_ptr<TextBuffer> buf_;
 	Metrics metrics_;
@@ -138,6 +181,13 @@ private:
 	// Желаемая «клетка» при вертикальном движении (как в редакторах).
 	std::size_t want_cells_ = 0;
 	bool want_cells_valid_ = false;
+	bool wrap_ = false;
+	std::size_t wrap_cells_ = 80; // сколько «клеток» помещается в ряд
+	// Первый ряд каждой строки (строится по мере надобности, см. ensure_row_prefix).
+	mutable std::vector<std::uint32_t> row_prefix_;
+	mutable std::size_t row_prefix_lines_ = 0;
+	mutable std::size_t row_total_ = 0;
+	mutable bool row_total_valid_ = false;
 
 	float view_w_ = 0.0F;
 	float view_h_ = 0.0F;

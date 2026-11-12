@@ -4,6 +4,7 @@ add_executable(yo_tests
 	test_golden.cpp
 	test_textbuf.cpp
 	test_editor.cpp
+	test_wrap.cpp
 	test_utf.cpp
 	test_yofytext.cpp
 	test_askpanel.cpp

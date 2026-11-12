@@ -67,6 +67,7 @@ constexpr int kCmdReplace = 1019;
 constexpr int kCmdFindRegex = 1023;
 constexpr int kCmdFileProp = 1024;
 constexpr int kCmdLineNumbers = 1025;
+
 constexpr int kCmdAbout = 1026;
 constexpr int kCmdYofyNext = 1034;
 constexpr int kCmdYofyPrev = 1035;
@@ -77,6 +78,7 @@ constexpr int kCmdOptions = 1111;
 constexpr int kCmdOpenDict = 1112;
 constexpr int kCmdOpenRegexDict = 1113;
 constexpr int kCmdClearUserSel = 1114;
+constexpr int kCmdWordWrap = 1115;
 
 constexpr UINT_PTR kCaretTimer = 1;
 constexpr int kDefaultWidth = 1000;
@@ -377,6 +379,8 @@ void App::load_settings()
 	propose_last_ = ini.get_bool(kYo, "ProposeLast", propose_last_);
 	regexs_ = ini.get_bool(kYo, "RegExprs", regexs_);
 	to_confirm_abbr_ = ini.get_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+	// Не из формата оригинала: перенос по словам (по умолчанию выключен).
+	word_wrap_ = ini.get_bool(kYo, "WordWrap", word_wrap_);
 
 	const auto get_w = [&](std::string_view key)
 	{ return widen(ini.get(kYo, key)); };
@@ -438,6 +442,7 @@ void App::save_settings()
 	ini.set_bool(kYo, "ProposeLast", propose_last_);
 	ini.set_bool(kYo, "RegExprs", regexs_);
 	ini.set_bool(kYo, "ToConfirmAbbr", to_confirm_abbr_);
+	ini.set_bool(kYo, "WordWrap", word_wrap_);
 	ini.set_float(kYo, "FontSize", font_size_);
 	if (!dict_setting_.empty())
 		ini.set(kYo, "Dictionary", narrow(dict_setting_));
@@ -710,6 +715,7 @@ void App::build_menus()
 		{ L"Обычный размер\tCtrl+0", kCmdFontReset },
 		{ L"", 0, true },
 		{ L"Номера строк\tCtrl+Shift+L", kCmdLineNumbers },
+		{ L"Перенос по словам\tCtrl+Shift+W", kCmdWordWrap },
 	};
 	menus_.push_back(std::move(view));
 
@@ -987,6 +993,7 @@ void App::setup_accels()
 		{ FSHIFT | FVIRTKEY, VK_F10, kCmdClearMarks },
 		{ FCONTROL | FVIRTKEY, '0', kCmdFontReset },
 		{ FCONTROL | FSHIFT | FVIRTKEY, 'L', kCmdLineNumbers },
+		{ FCONTROL | FSHIFT | FVIRTKEY, 'W', kCmdWordWrap },
 		{ FCONTROL | FVIRTKEY, 'P', kCmdFileProp },
 		{ FCONTROL | FVIRTKEY, 'L', kCmdOpen },
 		{ FVIRTKEY, VK_F1, kCmdAbout },
@@ -1069,6 +1076,9 @@ void App::update_menu_checks()
 			case kCmdLineNumbers:
 				e.checked = show_numbers_;
 				break;
+			case kCmdWordWrap:
+				e.checked = word_wrap_;
+				break;
 			default:
 				break;
 			}
@@ -1083,6 +1093,7 @@ void App::sync_metrics()
 	m.line_height = renderer_.line_height();
 	m.padding_x = 0.0F;
 	ed_->set_metrics(m);
+	ed_->set_word_wrap(word_wrap_); // настройка переноса живёт в yo.ini
 }
 
 void App::invalidate()
@@ -1122,9 +1133,12 @@ void App::update_scrollbars(bool redraw)
 	sv.cbSize = sizeof(sv);
 	sv.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
 	sv.nMin = 0;
-	sv.nMax = static_cast<int>(std::max<std::size_t>(1, buf_->line_count()) - 1);
-	sv.nPage = static_cast<UINT>(std::max<std::size_t>(1, ed_->visible_line_count()));
-	sv.nPos = static_cast<int>(ed_->first_visible_line());
+	// При переносе по словам полоса меряется визуальными рядами, а не
+	// логическими строками (иначе бегунок «прыгал» бы).
+	const std::size_t total_rows = ed_->word_wrap() ? ed_->row_count() : buf_->line_count();
+	sv.nMax = static_cast<int>(std::max<std::size_t>(1, total_rows) - 1);
+	sv.nPage = static_cast<UINT>(std::max<std::size_t>(1, ed_->visible_row_count()));
+	sv.nPos = static_cast<int>(ed_->first_visible_row());
 	SetScrollInfo(hwnd_, SB_VERT, &sv, redraw ? TRUE : FALSE);
 
 	const float cw = std::max(1.0F, renderer_.char_width());
@@ -1555,7 +1569,7 @@ void App::on_vscroll(int code)
 	si.cbSize = sizeof(si);
 	si.fMask = SIF_ALL;
 	GetScrollInfo(hwnd_, SB_VERT, &si);
-	long target = static_cast<long>(ed_->first_visible_line());
+	long target = static_cast<long>(ed_->first_visible_row());
 	const long page = std::max<long>(1, static_cast<long>(si.nPage));
 	switch (code)
 	{
@@ -1579,12 +1593,14 @@ void App::on_vscroll(int code)
 		target = 0;
 		break;
 	case SB_BOTTOM:
-		target = static_cast<long>(buf_->line_count());
+		target = static_cast<long>(ed_->word_wrap() ? ed_->row_count() : buf_->line_count());
 		break;
 	default:
 		return;
 	}
-	ed_->scroll_lines(target - static_cast<long>(ed_->first_visible_line()));
+	// Шаг — в рядах: без переноса ряд совпадает со строкой.
+	ed_->scroll_by(0.0F, static_cast<float>(target - static_cast<long>(ed_->first_visible_row())) *
+							 std::max(1.0F, ed_->metrics().line_height));
 	update_scrollbars();
 	invalidate();
 }
@@ -1752,6 +1768,9 @@ void App::on_command(int id)
 		break;
 	case kCmdLineNumbers:
 		toggle_line_numbers();
+		break;
+	case kCmdWordWrap:
+		toggle_word_wrap();
 		break;
 	case kCmdFileProp:
 		show_file_props();
@@ -3147,6 +3166,24 @@ void App::yofy_goto(bool forward)
 void App::toggle_line_numbers()
 {
 	show_numbers_ = !show_numbers_;
+	update_menu_checks();
+	find_sync_view();
+	refresh_view();
+}
+
+// Перенос по словам: в оригинале его нет, поэтому по умолчанию выключен.
+void App::toggle_word_wrap()
+{
+	word_wrap_ = !word_wrap_;
+	apply_word_wrap();
+	save_settings();
+	invalidate();
+}
+
+void App::apply_word_wrap()
+{
+	if (ed_ != nullptr)
+		ed_->set_word_wrap(word_wrap_);
 	update_menu_checks();
 	find_sync_view();
 	refresh_view();

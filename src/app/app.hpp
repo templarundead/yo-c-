@@ -241,6 +241,8 @@ private:
 	[[nodiscard]] static bool mru_decode_flags(std::string_view flags, Encoding& enc, bool& bom);
 
 	void toggle_line_numbers();
+	void toggle_word_wrap();
+	void apply_word_wrap();
 	void show_about();
 	void show_file_props();
 	// Переход по сделанным заменам (Ctrl+W / Ctrl+Q, как FindyyFwd/FindyyBack).
@@ -301,6 +303,7 @@ private:
 	std::vector<std::pair<std::size_t, std::size_t>> yofy_marks_;
 	std::size_t yofy_mark_index_ = 0;
 	bool show_numbers_ = false;
+	bool word_wrap_ = false; // перенос по словам (в оригинале нет; по умолчанию выкл.)
 
 	// Окно настроек: значения правятся в options_state_, применяются
 	// кнопкой «Применить»/«Запомнить».
