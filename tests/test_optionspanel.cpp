@@ -189,13 +189,21 @@ TEST_CASE("настройки: вкладка «Редактор» — пунк�
 	CHECK(find_row(named_layout, OptionChoice::font_size)->value == "Cascadia Mono, 11");
 	CHECK_FALSE(find_row(layout, OptionChoice::mark)->checked); // mark = false в состоянии
 
-	int plus = -1;
-	for (std::size_t b = 0; b < layout.buttons.size(); ++b)
-		if (layout.buttons[b].what == OptionChoice::font_bigger)
-			plus = static_cast<int>(b);
-	REQUIRE(plus >= 0);
-	const OptionRowBox* font = find_row(layout, OptionChoice::font_size);
-	CHECK(layout.buttons[static_cast<std::size_t>(plus)].y >= font->y);
+	// У строки «Шрифт» нет «−»/«+»: шрифт выбирается системным диалогом по
+	// щелчку на самой строке (как bFont оригинала), лишние кнопки убраны.
+	for (const OptionButtonBox& b : layout.buttons)
+	{
+		CHECK(b.what != OptionChoice::font_bigger);
+		CHECK(b.what != OptionChoice::font_smaller);
+	}
+	// Степпер остался только у «Количество строк промотки» (вкладка «Ёфикация»).
+	OptionsState yofy_tab = state;
+	yofy_tab.tab = 0;
+	const OptionsLayout yofy_layout = layout_options(yofy_tab, 1200.0F, 900.0F, 15.0F);
+	bool has_lines_plus = false;
+	for (const OptionButtonBox& b : yofy_layout.buttons)
+		has_lines_plus = has_lines_plus || b.what == OptionChoice::lines_below_plus;
+	CHECK(has_lines_plus);
 }
 
 TEST_CASE("настройки: вкладка «Словари» — пути", "[options]")
@@ -413,4 +421,49 @@ TEST_CASE("настройки: размер шрифта без хвостов",
 	CHECK(options_font_text(15.4F) == "15");
 	CHECK(options_font_text(16.0F) == "16");
 	CHECK(options_font_text(0.0F) == "1");
+}
+
+TEST_CASE("настройки: окно компактное и строки не наезжают друг на друга", "[options]")
+{
+	// Окно должно занимать минимум места: заголовок, вкладки, строки и кнопки
+	// идут без «воздуха» между ними, но и без наложений.
+	const OptionsState state = sample_state();
+	const OptionsLayout layout = layout_options(state, 1200.0F, 900.0F, 12.0F);
+	REQUIRE(layout.visible);
+	// Высота строки — строка шрифта плюс небольшой отступ (не «двойная»).
+	const OptionRowBox* first = find_row(layout, OptionChoice::check_yo);
+	REQUIRE(first != nullptr);
+	CHECK(first->h <= 12.0F + 6.5F);
+	// Соседние строки не перекрываются и идут вплотную.
+	const OptionRowBox* second = find_row(layout, OptionChoice::no_var_only);
+	REQUIRE(second != nullptr);
+	CHECK(second->y >= first->y + first->h);
+	CHECK(second->y - (first->y + first->h) <= 2.0F);
+	// Кнопки внизу — внутри окна, под строками.
+	for (const OptionButtonBox& b : layout.buttons)
+	{
+		CHECK(b.x >= layout.x);
+		CHECK(b.x + b.w <= layout.x + layout.w + 0.5F);
+		CHECK(b.y + b.h <= layout.y + layout.h + 0.5F);
+	}
+	// Компактность: окно вкладки «Редактор» (12 строк с вкладками) укладывается
+	// в треть экрана 900 DIP — раньше это было ~400 DIP.
+	CHECK(layout.h <= 330.0F);
+}
+
+TEST_CASE("настройки: значение числа не уезжает под кнопки «−»/«+»", "[options]")
+{
+	OptionsState state = sample_state();
+	state.tab = 0;
+	const OptionsLayout layout = layout_options(state, 1200.0F, 900.0F, 15.0F);
+	const OptionRowBox* lines = find_row(layout, OptionChoice::lines_below);
+	REQUIRE(lines != nullptr);
+	REQUIRE(lines->value_inset > 0.0F);
+	// Степперы стоят внутри отступа значения, то есть правее него.
+	for (const OptionButtonBox& b : layout.buttons)
+	{
+		if (b.what != OptionChoice::lines_below_minus && b.what != OptionChoice::lines_below_plus)
+			continue;
+		CHECK(b.x >= lines->x + lines->w - lines->value_inset - 0.5F);
+	}
 }

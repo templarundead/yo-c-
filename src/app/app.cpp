@@ -3088,6 +3088,7 @@ void App::options_sync_view()
 		view.rect = D2D1::RectF(row.x, row.y, row.x + row.w, row.y + row.h);
 		view.label = widen(row.label);
 		view.value = widen(row.value);
+		view.value_inset = row.value_inset;
 		view.check = row.check;
 		view.checked = row.checked;
 		view.path = row.path;
@@ -4637,7 +4638,9 @@ void App::ask_build_view()
 
 	// Ширину строк меряет тот же шрифт, которым рисуем панель.
 	const AskLayout layout = layout_ask_panel(
-		in, [this](std::string_view text) { return renderer_.measure_ui(widen(text)); });
+		// Мерим тем же шрифтом, которым панель рисуется (fmt_ask_, а не
+		// интерфейсный 12 DIP): иначе подписи кнопок не влезали.
+		in, [this](std::string_view text) { return renderer_.measure_ask(widen(text)); });
 	if (!layout.visible)
 		return;
 
@@ -4925,6 +4928,31 @@ int App::ask_button_at(float x, float y) const
 			return static_cast<int>(i);
 	}
 	return -1;
+}
+
+void App::track_mouse_leave()
+{
+	if (mouse_tracking_ || hwnd_ == nullptr)
+		return;
+	TRACKMOUSEEVENT tme{};
+	tme.cbSize = sizeof(tme);
+	tme.dwFlags = TME_LEAVE;
+	tme.hwndTrack = hwnd_;
+	mouse_tracking_ = TrackMouseEvent(&tme) != FALSE;
+}
+
+void App::clear_hover()
+{
+	if (ask_.hot < 0 && options_hot_ < 0 && dict_hot_ < 0 && hot_item_ < 0 && hot_title_ < 0)
+		return;
+	ask_.hot = -1;
+	options_hot_ = -1;
+	dict_hot_ = -1;
+	hot_item_ = -1;
+	hot_title_ = -1;
+	for (FindBarButtonView& b : find_view_.buttons)
+		b.hot = false;
+	invalidate();
 }
 
 void App::ask_mouse_move(float x, float y)
@@ -5304,6 +5332,7 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		case WM_MOUSEMOVE:
 		{
+			track_mouse_leave();
 			const float scale = std::max(1.0F, renderer_.dpi_scale());
 			ask_mouse_move(static_cast<float>(GET_X_LPARAM(lp)) / scale,
 				static_cast<float>(GET_Y_LPARAM(lp)) / scale);
@@ -5369,9 +5398,18 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 	}
 	case WM_KILLFOCUS:
+		// Ховер-подсветка не должна оставаться на кнопках, когда окно
+		// потеряло фокус (пользователь ушёл в другое приложение).
+		clear_hover();
 		caret_on_ = false;
 		KillTimer(hwnd_, kCaretTimer);
 		invalidate();
+		return 0;
+	case WM_MOUSELEAVE:
+		// Мышь ушла из окна — снимаем подсветку и просим сообщение снова
+		// при следующем входе (TrackMouseEvent ниже).
+		mouse_tracking_ = false;
+		clear_hover();
 		return 0;
 	case WM_CHAR:
 		on_char(static_cast<wchar_t>(wp));
@@ -5429,6 +5467,7 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 	case WM_MOUSEMOVE:
 	{
+		track_mouse_leave();
 		const float scale = std::max(1.0F, renderer_.dpi_scale());
 		const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
 		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;

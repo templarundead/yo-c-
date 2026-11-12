@@ -9,9 +9,9 @@ namespace yo {
 
 namespace {
 
-constexpr float kPad = 14.0F;	 // поля окна
-constexpr float kRowGap = 2.0F;	 // зазор между строками
-constexpr float kPanelMinW = 420.0F;
+constexpr float kPad = 10.0F;	 // поля окна (компактно, как у TForm)
+constexpr float kRowGap = 1.0F;	 // зазор между строками
+constexpr float kPanelMinW = 400.0F;
 
 // Приблизительная ширина строки: точные метрики есть только у GUI, а для
 // раскладки достаточно пропорции — тесты проверяют, что кнопки не
@@ -311,9 +311,11 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 		return out;
 
 	const float lh = std::max(10.0F, line_h);
-	const float row_h = lh + 8.0F;
-	const float button_h = lh + 10.0F;
-	const float tab_h = lh + 12.0F;
+	// Компактно: высота строки — строка текста плюс минимальные отступы,
+	// как у нативных чекбоксов; окно не должно занимать пол-экрана.
+	const float row_h = lh + 6.0F;
+	const float button_h = lh + 8.0F;
+	const float tab_h = lh + 8.0F;
 
 	const int tab = std::clamp(state.tab, 0, 2);
 	const std::vector<RowDef> rows =
@@ -325,7 +327,7 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 	const auto measure = [&](const std::vector<RowDef>& defs)
 	{
 		for (const RowDef& d : defs)
-			content = std::max(content, text_width(d.label, lh) + text_width(d.value, lh) + 190.0F);
+			content = std::max(content, text_width(d.label, lh) + text_width(d.value, lh) + 150.0F);
 	};
 	measure(yofy_rows(state));
 	measure(editor_rows(state));
@@ -335,7 +337,7 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 	out.w = std::max(out.w, 260.0F);
 
 	const float rows_h = static_cast<float>(rows.size()) * (row_h + kRowGap);
-	out.h = kPad + lh * 1.8F + tab_h + kRowGap + rows_h + kPad + button_h + kPad;
+	out.h = kPad + lh * 1.5F + tab_h + kRowGap + rows_h + kPad + button_h + kPad;
 	out.h = std::min(out.h, std::max(140.0F, height - 16.0F));
 	out.x = std::max(8.0F, (width - out.w) * 0.5F);
 	out.y = std::max(8.0F, (height - out.h) * 0.5F);
@@ -343,7 +345,7 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 
 	// Заголовки вкладок: «Ёфикация» / «Редактор» / «Словари» слева направо.
 	float tab_x = out.x + kPad;
-	const float tab_y = out.y + kPad + lh * 1.8F;
+	const float tab_y = out.y + kPad + lh * 1.5F;
 	const std::array<OptionChoice, 3> tab_choices = { OptionChoice::tab_yofy,
 													  OptionChoice::tab_editor,
 													  OptionChoice::tab_dicts };
@@ -383,8 +385,10 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 		y += row_h + kRowGap;
 	}
 
-	// «−»/«+» справа в строках числа: строки промотки и размер шрифта.
-	const float small = std::max(22.0F, lh + 10.0F);
+	// «−»/«+» справа в строке числа строк промотки. У размера шрифта
+	// степперов нет: строка «Шрифт» открывает системный диалог выбора шрифта
+	// (как bFont оригинала), а лишние «−»/«+» только загромождали окно.
+	const float small = std::max(20.0F, lh + 8.0F);
 	const float row_right = out.x + out.w - kPad;
 	const auto stepper = [&](const OptionRowBox& row, OptionChoice minus, OptionChoice plus)
 	{
@@ -395,12 +399,13 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 		out.buttons.push_back(
 			OptionButtonBox{ minus, "−", row_right - 2.0F * small - 4.0F, by, small, bh });
 	};
-	for (const OptionRowBox& row : out.rows)
+	for (OptionRowBox& row : out.rows)
 	{
 		if (row.what == OptionChoice::lines_below)
+		{
 			stepper(row, OptionChoice::lines_below_minus, OptionChoice::lines_below_plus);
-		else if (row.what == OptionChoice::font_size)
-			stepper(row, OptionChoice::font_smaller, OptionChoice::font_bigger);
+			row.value_inset = 2.0F * small + 8.0F;
+		}
 	}
 
 	// Кнопки внизу — как bOK, bCancel, bOKSave оригинала (слева направо).

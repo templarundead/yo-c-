@@ -78,8 +78,9 @@ struct OptionsRowView
 	bool checked = false;
 	bool path = false;
 	bool tab = false;		 // заголовок вкладки («Ёфикация»/«Редактор»/«Словари»)
-	bool tab_active = false; // активная вкладка — залитая
+	bool tab_active = false; // активная вкладка — подчёркнутая
 	bool enabled = true;	 // доступна (правила блокировок OptionsPage)
+	float value_inset = 0.0F; // отступ значения справа (кнопки «−»/«+»)
 };
 
 struct OptionsButtonView
@@ -208,6 +209,15 @@ struct Theme
 	D2D1_COLOR_F status_bg = D2D1::ColorF(0.14F, 0.15F, 0.17F);
 	D2D1_COLOR_F status_fg = D2D1::ColorF(0.66F, 0.69F, 0.72F);
 	D2D1_COLOR_F accent = D2D1::ColorF(0.36F, 0.62F, 0.98F);
+	// Нативные системные тона: кнопка отличается от фона панели настолько,
+	// чтобы её было видно, но без «синих» заливок и рамок.
+	D2D1_COLOR_F control = D2D1::ColorF(0.21F, 0.22F, 0.25F); // фон кнопки
+	D2D1_COLOR_F control_hot = D2D1::ColorF(0.26F, 0.27F, 0.31F); // под мышью
+	D2D1_COLOR_F border = D2D1::ColorF(0.34F, 0.36F, 0.40F);	// обычная рамка
+	D2D1_COLOR_F border_hot = D2D1::ColorF(0.55F, 0.58F, 0.63F); // рамка в фокусе
+	// «Е»/«Ё» в панели вопросов: только цвет подписи, без фона.
+	D2D1_COLOR_F ye_text = D2D1::ColorF(0.55F, 0.73F, 1.00F);
+	D2D1_COLOR_F yo_text = D2D1::ColorF(0.55F, 0.88F, 0.62F);
 };
 
 class Renderer
@@ -301,13 +311,8 @@ private:
 	void draw_dict_editor(const DictView& view);
 	// height_fraction = 1 — заливка ряда (фон пометки), меньше — тонкая полоса
 	// у нижнего края (цвет пометки).
-	void draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
-					const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color,
-					float height_fraction = 1.0F);
 	void draw_ask(const AskView& view);
 	void draw_menu_bar(const MenuBarView& bar);
-	void draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, float text_h,
-							 std::size_t from, std::size_t to);
 
 	HWND hwnd_ = nullptr;
 	ID2D1Factory* factory_ = nullptr;

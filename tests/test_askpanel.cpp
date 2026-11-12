@@ -356,3 +356,24 @@ TEST_CASE("askpanel: байтовый диапазон слова для под�
 	REQUIRE(e.valid());
 	CHECK(emoji.substr(e.from, e.to - e.from) == "ё");
 }
+
+TEST_CASE("панель вопросов: подписи кнопок влезают целиком", "[askpanel]")
+{
+	// Текст кнопки рисуется тем же шрифтом, которым измерен: подпись
+	// «Пропустить [5]» не должна обрезаться по краям («1ропустить [5]»).
+	AskLayoutInput in = base_input();
+	in.bottom_bar = true;
+	in.word1 = "все";
+	in.word2 = "всё";
+	in.context = "Фама, знаю, мы все сошли с ума";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	REQUIRE(layout.buttons.size() == 7);
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		// Полная ширина подписи плюс поля по краям помещается в кнопку.
+		CHECK(mono(b.label) + in.char_width <= b.w + 0.5F);
+		CHECK(b.x >= 0.0F);
+		CHECK(b.x + b.w <= in.client_w + 0.5F);
+	}
+}

@@ -120,13 +120,16 @@ AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measur
 	right.push_back({ AskChoice::skip, key(std::string("Пропустить"), "5") });
 	const Entry cancel_entry{ AskChoice::cancel, key(std::string("Прервать"), "Esc") };
 
+	// Ширина колонки: самая длинная подпись плюс поля по краям. Подпись
+	// рисуется тем же шрифтом, которым её измерили (measure — шрифт панели),
+	// иначе текст обрезался с краю («1ропустить [5]»).
 	const auto column_w = [&](const std::vector<Entry>& column)
 	{
 		float w = 0.0F;
 		for (const Entry& e : column)
 			w = std::max(w, width(e.label));
 		w = std::max(w, width(cancel_entry.label) * 0.5F);
-		return std::min(avail_w, std::max(12.0F * cw, w + 3.0F * gap));
+		return std::min(avail_w, std::max(12.0F * cw, w + 4.0F * gap));
 	};
 
 	// Две колонки; не влезают — одна колонка (кнопки всё равно нажимаются).
@@ -144,7 +147,7 @@ AskLayout layout_bottom_bar(const AskLayoutInput& in, const AskMeasureFn& measur
 		float w = 0.0F;
 		for (const Entry& e : single)
 			w = std::max(w, width(e.label));
-		col_w = std::min(avail_w, std::max(12.0F * cw, w + 3.0F * gap));
+		col_w = std::min(avail_w, std::max(12.0F * cw, w + 4.0F * gap));
 	}
 
 	// Строки текста: сначала предложение с обрабатываемым словом, затем

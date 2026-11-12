@@ -412,7 +412,7 @@ void Renderer::draw_find_bar(const FindBarView& view)
 
 	const auto draw_field = [&](const D2D1_RECT_F& rect, const std::wstring& value, bool active, bool replace_field)
 	{
-		brush_->SetColor(active ? theme_.accent : theme_.status_fg);
+		brush_->SetColor(active ? theme_.border_hot : theme_.border);
 		rt_->DrawRectangle(rect, brush_, 1.0F);
 		if (!value.empty())
 		{
@@ -448,9 +448,9 @@ void Renderer::draw_find_bar(const FindBarView& view)
 	for (const FindBarButtonView& b : view.buttons)
 	{
 		const bool lit = b.hot || (b.toggle && b.checked);
-		brush_->SetColor(lit ? theme_.selection : theme_.status_bg);
+		brush_->SetColor(lit ? theme_.control_hot : theme_.control);
 		rt_->FillRectangle(b.rect, brush_);
-		brush_->SetColor(lit ? theme_.accent : theme_.gutter);
+		brush_->SetColor(lit ? theme_.border_hot : theme_.border);
 		rt_->DrawRectangle(b.rect, brush_, 1.0F);
 		brush_->SetColor(lit ? theme_.text : theme_.status_fg);
 		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_, b.rect, brush_,
@@ -460,46 +460,6 @@ void Renderer::draw_find_bar(const FindBarView& view)
 }
 
 // Подсветка найденных совпадений: жёлтая заливка под текстом.
-void Renderer::draw_marks(Editor& ed, float scroll_x, float scroll_y, float text_h,
-						  const std::vector<std::pair<std::size_t, std::size_t>>& marks, D2D1_COLOR_F color,
-						  float height_fraction)
-{
-	if (rt_ == nullptr || brush_ == nullptr || marks.empty())
-		return;
-	const float lh = std::max(1.0F, ed.metrics().line_height);
-	brush_->SetColor(color);
-	// Ряды: без переноса ряд совпадает с логической строкой, с переносом
-	// подсветка режется по видимым рядам.
-	for (const Editor::Row& row : ed.visible_rows())
-	{
-		const std::size_t line_start = ed.buffer().line_start(row.line);
-		const std::size_t line_len = ed.buffer().line_text(row.line).size();
-		const std::size_t row_start = line_start + row.from;
-		const std::size_t row_end = line_start + std::min(row.to, line_len);
-		const float y = bar_h_ + row.top - scroll_y;
-		if (y + lh < bar_h_ || y > bar_h_ + text_h)
-			continue;
-		for (const auto& [from, to] : marks)
-		{
-			if (to <= row_start || from >= row_end)
-				continue;
-			if (row_end <= row_start)
-				continue;
-			const std::size_t a = from > row_start ? from - line_start : row.from;
-			const std::size_t b = std::min(to - line_start, row.to);
-			if (b <= a)
-				continue;
-			const float x1 = text_x0() + ed.row_width(row, a) - scroll_x;
-			const float x2 = text_x0() + ed.row_width(row, b) - scroll_x;
-			// height_fraction < 1 — тонкая линия у нижнего края ряда (цвет
-			// пометки), 1 — фон всей высоты.
-			const float top = height_fraction >= 1.0F ? y + 1.0F
-													  : y + lh * (1.0F - height_fraction) - 1.0F;
-			const float bottom = height_fraction >= 1.0F ? y + lh - 1.0F : y + lh - 1.0F;
-			rt_->FillRectangle(D2D1::RectF(x1, top, std::max(x2, x1 + 1.0F), bottom), brush_);
-		}
-	}
-}
 
 void Renderer::draw_options(const OptionsView& view)
 {
@@ -510,72 +470,90 @@ void Renderer::draw_options(const OptionsView& view)
 	if (dim_brush_ != nullptr)
 		rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, width_dip_, height_dip_), dim_brush_);
 
-	brush_->SetColor(theme_.gutter);
+	// Окно — как системный диалог в тёмной теме: фон панели и тонкая серая
+	// рамка. Никакого синего контура вокруг окна.
+	brush_->SetColor(theme_.status_bg);
 	rt_->FillRectangle(view.rect, brush_);
-	brush_->SetColor(theme_.accent);
+	brush_->SetColor(theme_.border);
 	rt_->DrawRectangle(view.rect, brush_, 1.0F);
 
-	// Заголовок.
+	// Заголовок «Опции» — компактно, в одну строку интерфейсного шрифта.
+	const float title_top = view.rect.top + 6.0F;
 	brush_->SetColor(theme_.text);
 	rt_->DrawTextW(view.title.c_str(), static_cast<UINT32>(view.title.size()), fmt_ui_,
-				   D2D1::RectF(view.rect.left + 14.0F, view.rect.top + 8.0F, view.rect.right - 14.0F,
-							   view.rect.top + 28.0F),
+				   D2D1::RectF(view.rect.left + 10.0F, title_top, view.rect.right - 10.0F,
+							   title_top + ui_line_h_),
 				   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 
 	for (std::size_t i = 0; i < view.rows.size(); ++i)
 	{
 		const OptionsRowView& row = view.rows[i];
+		const bool focused = static_cast<int>(i) == view.focus;
 		if (row.tab)
 		{
-			// Заголовок вкладки: активная — залита цветом выделения и
-			// подчёркнута акцентом, как ярлык TPageControl оригинала.
-			brush_->SetColor(row.tab_active ? theme_.selection
-											: (static_cast<int>(i) == view.focus ? theme_.status_bg
-																				: theme_.gutter));
-			rt_->FillRectangle(row.rect, brush_);
-			brush_->SetColor(row.tab_active ? theme_.accent : theme_.status_fg);
-			rt_->DrawRectangle(row.rect, brush_, 1.0F);
+			// Вкладки — как ярлыки TPageControl: без заливки и рамки, активная
+			// выделена подписью и линией снизу; фокус клавиатуры — тонкая рамка.
+			if (focused)
+			{
+				brush_->SetColor(theme_.border);
+				rt_->DrawRectangle(row.rect, brush_, 1.0F);
+			}
 			brush_->SetColor(row.tab_active ? theme_.text : theme_.status_fg);
 			rt_->DrawTextW(row.label.c_str(), static_cast<UINT32>(row.label.size()), fmt_center_,
 						   row.rect, brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+			if (row.tab_active)
+			{
+				brush_->SetColor(theme_.border_hot);
+				rt_->FillRectangle(D2D1::RectF(row.rect.left + 2.0F, row.rect.bottom - 2.0F,
+											   row.rect.right - 2.0F, row.rect.bottom),
+								   brush_);
+			}
 			continue;
 		}
-		if (static_cast<int>(i) == view.focus)
+		// Строка в фокусе — «фокусная рамка» системного вида, без синей заливки.
+		if (focused)
 		{
-			brush_->SetColor(theme_.selection);
-			rt_->FillRectangle(row.rect, brush_);
+			brush_->SetColor(theme_.border);
+			rt_->DrawRectangle(row.rect, brush_, 1.0F);
 		}
-		float x = row.rect.left + 2.0F;
+		float x = row.rect.left + 4.0F;
 		if (row.check)
 		{
-			// Галочка: рамка и «×» внутри — тот же вид, что у кнопок панели.
-			const float box = std::max(12.0F, row.rect.bottom - row.rect.top - 8.0F);
+			// Чекбокс: квадрат с галочкой (линиями), как у системного контроля.
+			const float box = std::clamp(row.rect.bottom - row.rect.top - 4.0F, 11.0F, 13.0F);
 			const float top = row.rect.top + (row.rect.bottom - row.rect.top - box) * 0.5F;
 			const D2D1_RECT_F mark_rect = D2D1::RectF(x, top, x + box, top + box);
-			brush_->SetColor(theme_.status_fg);
+			brush_->SetColor(row.enabled ? theme_.status_fg : theme_.border);
 			rt_->DrawRectangle(mark_rect, brush_, 1.0F);
 			if (row.checked)
 			{
-				const std::wstring tick = L"×";
-				brush_->SetColor(theme_.text);
-				rt_->DrawTextW(tick.c_str(), static_cast<UINT32>(tick.size()), fmt_center_, mark_rect,
-							   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+				brush_->SetColor(row.enabled ? theme_.text : theme_.status_fg);
+				const float w = box;
+				const float h = box;
+				rt_->DrawLine(D2D1::Point2F(mark_rect.left + w * 0.22F, mark_rect.top + h * 0.52F),
+							  D2D1::Point2F(mark_rect.left + w * 0.42F, mark_rect.top + h * 0.74F),
+							  brush_, 1.6F);
+				rt_->DrawLine(D2D1::Point2F(mark_rect.left + w * 0.42F, mark_rect.top + h * 0.74F),
+							  D2D1::Point2F(mark_rect.left + w * 0.78F, mark_rect.top + h * 0.26F),
+							  brush_, 1.6F);
 			}
-			x += box + 8.0F;
+			x += box + 7.0F;
 		}
-		// Недоступная строка (правила OptionsPage.cbClick) — приглушённая.
-		brush_->SetColor(row.enabled ? (row.path ? theme_.accent : theme_.text) : theme_.status_fg);
+		// Недоступная строка (правила OptionsPage.cbClick) — приглушённая;
+		// «синие» пути словарей больше не подсвечиваются.
+		brush_->SetColor(row.enabled ? theme_.text : theme_.status_fg);
+		// Значение — у правого края строки, но левее кнопок «−»/«+».
+		const float value_right = row.rect.right - row.value_inset;
 		const float value_w = row.value.empty() ? 0.0F : measure_ui(row.value) + 10.0F;
 		rt_->DrawTextW(row.label.c_str(), static_cast<UINT32>(row.label.size()), fmt_ui_,
-					   D2D1::RectF(x, row.rect.top, std::max(x + 10.0F, row.rect.right - value_w),
+					   D2D1::RectF(x, row.rect.top, std::max(x + 10.0F, value_right - value_w),
 								   row.rect.bottom),
 					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 		if (!row.value.empty())
 		{
-			brush_->SetColor(row.enabled ? (row.path ? theme_.status_fg : theme_.text) : theme_.status_fg);
+			brush_->SetColor(row.enabled ? theme_.status_fg : theme_.border);
 			rt_->DrawTextW(row.value.c_str(), static_cast<UINT32>(row.value.size()), fmt_ui_,
-						   D2D1::RectF(row.rect.right - value_w, row.rect.top, row.rect.right,
-									   row.rect.bottom),
+						   D2D1::RectF(value_right - value_w, row.rect.top, value_right, row.rect.bottom),
 						   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 		}
 	}
@@ -583,10 +561,12 @@ void Renderer::draw_options(const OptionsView& view)
 	for (std::size_t i = 0; i < view.buttons.size(); ++i)
 	{
 		const OptionsButtonView& b = view.buttons[i];
+		// Кнопки — нативные: заметный фон, серая рамка; под мышью/в фокусе
+		// чуть светлее, но без синей заливки.
 		const bool lit = static_cast<int>(i) == view.hot || b.primary;
-		brush_->SetColor(lit ? theme_.selection : theme_.status_bg);
+		brush_->SetColor(lit ? theme_.control_hot : theme_.control);
 		rt_->FillRectangle(b.rect, brush_);
-		brush_->SetColor(lit ? theme_.accent : theme_.status_fg);
+		brush_->SetColor(lit ? theme_.border_hot : theme_.border);
 		rt_->DrawRectangle(b.rect, brush_, 1.0F);
 		brush_->SetColor(theme_.text);
 		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_, b.rect, brush_,
@@ -623,41 +603,6 @@ float Renderer::measure_ui(const std::wstring& text)
 	return width;
 }
 
-void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, float text_h,
-								   std::size_t from, std::size_t to)
-{
-	if (rt_ == nullptr || brush_ == nullptr || from >= to)
-		return;
-	const float lh = std::max(1.0F, ed.metrics().line_height);
-	// Полупрозрачная заливка и рамка: буквы остаются читаемыми, а слово
-	// видно и поверх затемнения панели вопросов (раньше заливка была почти
-	// непрозрачной и «съедала» само слово).
-	const D2D1_COLOR_F fill = D2D1::ColorF(0.72F, 0.16F, 0.16F, 0.38F);
-	const D2D1_COLOR_F frame = D2D1::ColorF(0.95F, 0.38F, 0.30F, 0.95F);
-	for (const Editor::Row& row : ed.visible_rows())
-	{
-		const std::size_t line_start = ed.buffer().line_start(row.line);
-		const std::size_t line_len = ed.buffer().line_text(row.line).size();
-		const std::size_t row_start = line_start + row.from;
-		const std::size_t row_end = line_start + std::min(row.to, line_len);
-		if (row_end <= row_start || row_end < from || row_start > to)
-			continue;
-		const std::size_t a = from > row_start ? from - line_start : row.from;
-		const std::size_t b = std::min(to - line_start, row.to);
-		if (b <= a)
-			continue;
-		const float x1 = text_x0() + ed.row_width(row, a) - scroll_x;
-		const float x2 = text_x0() + ed.row_width(row, b) - scroll_x;
-		const float y = bar_h_ + row.top - scroll_y;
-		if (y + lh < bar_h_ || y > bar_h_ + text_h)
-			continue;
-		const D2D1_RECT_F rect = D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F);
-		brush_->SetColor(fill);
-		rt_->FillRectangle(rect, brush_);
-		brush_->SetColor(frame);
-		rt_->DrawRectangle(rect, brush_, 1.5F);
-	}
-}
 
 // Редактор словарей: таблица, поля ввода, кнопки и строка сообщения.
 void Renderer::draw_dict_editor(const DictView& view)
@@ -668,9 +613,9 @@ void Renderer::draw_dict_editor(const DictView& view)
 	if (dim_brush_ != nullptr)
 		rt_->FillRectangle(D2D1::RectF(0.0F, 0.0F, width_dip_, height_dip_), dim_brush_);
 
-	brush_->SetColor(theme_.gutter);
+	brush_->SetColor(theme_.status_bg);
 	rt_->FillRectangle(view.rect, brush_);
-	brush_->SetColor(theme_.accent);
+	brush_->SetColor(theme_.border);
 	rt_->DrawRectangle(view.rect, brush_, 1.0F);
 
 	// Заголовок и подпись («словарь: N слов»).
@@ -691,7 +636,7 @@ void Renderer::draw_dict_editor(const DictView& view)
 	{
 		brush_->SetColor(theme_.bg);
 		rt_->FillRectangle(rect, brush_);
-		brush_->SetColor(focus ? theme_.accent : theme_.status_fg);
+		brush_->SetColor(focus ? theme_.border_hot : theme_.border);
 		rt_->DrawRectangle(rect, brush_, 1.0F);
 		const std::wstring& shown = text.empty() ? empty_hint : text;
 		brush_->SetColor(text.empty() ? theme_.status_fg : theme_.text);
@@ -726,7 +671,8 @@ void Renderer::draw_dict_editor(const DictView& view)
 	{
 		if (row.current)
 		{
-			brush_->SetColor(theme_.selection);
+			// Текущая строка — системная подсветка, без синей заливки.
+			brush_->SetColor(theme_.control);
 			rt_->FillRectangle(row.rect, brush_);
 		}
 		brush_->SetColor(row.error ? D2D1::ColorF(0.85F, 0.35F, 0.30F) : theme_.text);
@@ -738,17 +684,17 @@ void Renderer::draw_dict_editor(const DictView& view)
 
 	for (const DictButtonView& b : view.buttons)
 	{
-		D2D1_COLOR_F fill = theme_.status_bg;
-		D2D1_COLOR_F border = theme_.status_fg;
+		D2D1_COLOR_F fill = theme_.control;
+		D2D1_COLOR_F border = theme_.border;
 		if (b.toggle && b.checked)
 		{
-			fill = theme_.selection;
-			border = theme_.accent;
+			fill = theme_.control_hot;
+			border = theme_.border_hot;
 		}
 		if (b.hot || b.primary)
 		{
-			fill = theme_.selection;
-			border = theme_.accent;
+			fill = theme_.control_hot;
+			border = theme_.border_hot;
 		}
 		brush_->SetColor(fill);
 		rt_->FillRectangle(b.rect, brush_);
@@ -788,7 +734,7 @@ void Renderer::draw_menu_bar(const MenuBarView& bar)
 		const bool lit = static_cast<int>(i) == bar.active || static_cast<int>(i) == bar.hot_title;
 		if (lit)
 		{
-			brush_->SetColor(bar.active == static_cast<int>(i) ? theme_.selection : theme_.status_bg);
+			brush_->SetColor(theme_.control);
 			rt_->FillRectangle(r, brush_);
 		}
 		brush_->SetColor(theme_.text);
@@ -802,7 +748,7 @@ void Renderer::draw_menu_bar(const MenuBarView& bar)
 	// Выпадающий список: фон, рамка, пункты, галочки и разделители.
 	brush_->SetColor(theme_.status_bg);
 	rt_->FillRectangle(bar.panel, brush_);
-	brush_->SetColor(theme_.accent);
+	brush_->SetColor(theme_.border);
 	rt_->DrawRectangle(bar.panel, brush_, 1.0F);
 
 	for (const MenuItemView& item : bar.items)
@@ -817,7 +763,8 @@ void Renderer::draw_menu_bar(const MenuBarView& bar)
 		}
 		if (item.hot && item.enabled)
 		{
-			brush_->SetColor(theme_.selection);
+			// Системная подсветка пункта: серый фон, без синего.
+			brush_->SetColor(theme_.control);
 			rt_->FillRectangle(item.rect, brush_);
 		}
 		brush_->SetColor(item.enabled ? theme_.text : theme_.status_fg);
@@ -849,7 +796,7 @@ void Renderer::draw_menu_bar(const MenuBarView& bar)
 		}
 		if (item.checked)
 		{
-			brush_->SetColor(theme_.accent);
+			brush_->SetColor(theme_.text);
 			rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(item.rect.left + 4.0F,
 														 (item.rect.top + item.rect.bottom) * 0.5F),
 										   2.0F, 2.0F),
@@ -867,7 +814,8 @@ void Renderer::draw_ask(const AskView& view)
 	// AskPanel оригинала.
 	brush_->SetColor(theme_.gutter);
 	rt_->FillRectangle(view.panel, brush_);
-	brush_->SetColor(theme_.accent);
+	// Разделитель сверху — системный тон, без синей полосы.
+	brush_->SetColor(theme_.border);
 	rt_->FillRectangle(D2D1::RectF(view.panel.left, view.panel.top, view.panel.right,
 								   view.panel.top + 1.0F),
 					   brush_);
@@ -876,9 +824,8 @@ void Renderer::draw_ask(const AskView& view)
 	{
 		if (row.text.empty())
 			continue;
-		const D2D1_COLOR_F base = row.kind == AskKind::accent   ? theme_.accent
-								  : row.kind == AskKind::dim ? theme_.status_fg
-															 : theme_.text;
+		// Заголовок панели — обычным цветом текста (без синей подписи).
+		const D2D1_COLOR_F base = row.kind == AskKind::dim ? theme_.status_fg : theme_.text;
 		const bool hot = row.has_hot && row.hot_from < row.hot_to && row.hot_to <= row.text.size();
 		if (!hot)
 		{
@@ -916,34 +863,42 @@ void Renderer::draw_ask(const AskView& view)
 	for (const AskButtonView& b : view.buttons)
 	{
 		const bool lit = b.focus || b.hot;
-		// Системные тона: без «синих рамок». «Е» — синяя кнопка, «Ё» —
-		// зелёная, остальные — как обычные кнопки окна.
-		D2D1_COLOR_F fill = theme_.status_bg;
-		D2D1_COLOR_F border = theme_.gutter;
+		// Нативный вид: у «Е»/«Ё» нет заливки — только цветная подпись
+		// (синяя/зелёная), у остальных кнопок фон заметно отличается от фона
+		// панели, иначе кнопки «сливались» с полосой. Рамка появляется только
+		// в фокусе/под мышью, без синих заливок.
 		D2D1_COLOR_F text = theme_.text;
+		D2D1_COLOR_F fill = lit ? theme_.control_hot : theme_.control;
+		D2D1_COLOR_F border = lit ? theme_.border_hot : theme_.border;
+		bool has_fill = true;
 		switch (b.tone)
 		{
 		case AskTone::ye:
-			fill = lit ? D2D1::ColorF(0.18F, 0.34F, 0.55F) : D2D1::ColorF(0.14F, 0.24F, 0.38F);
-			border = D2D1::ColorF(0.28F, 0.44F, 0.64F);
+			text = theme_.ye_text;
+			has_fill = false;
 			break;
 		case AskTone::yo:
-			fill = lit ? D2D1::ColorF(0.16F, 0.40F, 0.24F) : D2D1::ColorF(0.12F, 0.28F, 0.18F);
-			border = D2D1::ColorF(0.26F, 0.50F, 0.32F);
+			text = theme_.yo_text;
+			has_fill = false;
 			break;
 		case AskTone::neutral:
 		default:
-			if (lit)
-			{
-				fill = theme_.selection;
-				border = theme_.accent;
-			}
 			break;
 		}
-		brush_->SetColor(fill);
-		rt_->FillRectangle(b.rect, brush_);
-		brush_->SetColor(border);
-		rt_->DrawRectangle(b.rect, brush_, 1.0F);
+		if (has_fill)
+		{
+			brush_->SetColor(fill);
+			rt_->FillRectangle(b.rect, brush_);
+			brush_->SetColor(border);
+			rt_->DrawRectangle(b.rect, brush_, 1.0F);
+		}
+		else if (lit)
+		{
+			// Только рамка: «1»/«2» остаются цветными подписями на фоне полосы.
+			brush_->SetColor(b.tone == AskTone::ye ? theme_.ye_text : theme_.yo_text);
+			rt_->DrawRectangle(b.rect, brush_, 1.0F);
+			brush_->SetColor(text);
+		}
 		brush_->SetColor(text);
 		rt_->DrawTextW(b.label.c_str(), static_cast<UINT32>(b.label.size()), fmt_center_,
 					   D2D1::RectF(b.rect.left + padding_ * 0.5F, b.rect.top,
@@ -984,15 +939,9 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	// Видимые ряды: без переноса ряд = логическая строка, с переносом
 	// (WordWrap) одна строка занимает несколько рядов.
 	const std::vector<Editor::Row> rows = ed.visible_rows();
-
-	// Подсветка ёфикационных замен (как Mark оригинала) и найденного —
-	// под выделением и под текстом.
-	// Фон пометки ([Colors] ColorBackMark) — под текстом; сам текст красится
-	// ниже, drawing-эффектом раскладки (см. цикл отрисовки рядов).
-	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, yofy_back_color_);
-	if (mark_brush_ != nullptr)
-		mark_brush_->SetColor(yofy_text_color_);
-	draw_marks(ed, scroll_x, scroll_y, text_h, marks, D2D1::ColorF(0.95F, 0.80F, 0.20F, 0.35F));
+	// Прямоугольники слова под вопросом: считаются по раскладке в цикле
+	// отрисовки, а рисуются поверх затемнения панели вопросов.
+	std::vector<D2D1_RECT_F> word_rects;
 
 	// Полоса выделения рисуется под текстом.
 	if (ed.has_selection())
@@ -1048,9 +997,25 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 	}
 
 	// Текст видимых строк: раскладки кэшируются по номеру строки и тексту.
+	// Первый проход — раскладки и геометрия рядов; второй — фон пометок и
+	// подсветки (под буквами); третий — сами буквы. Подсветка слова считается
+	// по раскладке, поэтому совпадает с нарисованными буквами и при переносе.
+	struct RowDraw
+	{
+		const Editor::Row* row = nullptr;
+		CachedLine* slot = nullptr;
+		std::size_t line = 0;
+		std::size_t line_start = 0;
+		std::size_t from = 0; // срез в байтах строки
+		std::size_t to = 0;
+		std::string_view bytes;
+		float y = 0.0F;
+		float slice_x = 0.0F;
+	};
+	std::vector<RowDraw> draws;
+	draws.reserve(rows.size());
 	for (CachedLine& c : cache_)
 		c.used = false;
-	brush_->SetColor(theme_.text);
 	for (const Editor::Row& row : rows)
 	{
 		const std::size_t i = row.line;
@@ -1106,7 +1071,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		{
 			IDWriteTextLayout* layout = nullptr;
 			if (FAILED(dwrite_->CreateTextLayout(wide.c_str(), static_cast<UINT32>(wide.size()), fmt_,
-												 1.0e6F, line_h_ * 2.0F, &layout)))
+											 1.0e6F, line_h_ * 2.0F, &layout)))
 				continue;
 			// Подсветка ё (как метка ёфикации в оригинале): акцентный цвет
 			// на каждый символ «ё»/«Ё» через drawing effect.
@@ -1154,68 +1119,156 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		if (slot->layout == nullptr)
 			continue;
 
-		// Цвет и подчёркивание пометки ([Colors] ColorMark) на самих буквах:
-		// DWrite рисует текст цветом drawing-эффекта, поэтому нужные
-		// диапазоны красим кистью пометки. Эффекты хранятся в раскладке,
-		// а раскладка кэшируется — при смене пометок старые снимаем.
+		RowDraw d;
+		d.row = &row;
+		d.slot = slot;
+		d.line = i;
+		d.line_start = ed.buffer().line_start(i);
+		d.from = from_byte;
+		d.to = to_byte;
+		d.bytes = bytes;
+		d.y = line_y;
+		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
+		d.slice_x = ed.row_width(row, from_byte);
+		draws.push_back(d);
+	}
+
+	// Длина префикса среза в единицах UTF-16 (DWrite считает позиции в них):
+	// байты продолжения пропускаем, четырёхбайтовый символ — две единицы.
+	const auto units = [](std::string_view v)
+	{
+		std::size_t n = 0;
+		for (const char ch : v)
 		{
-			// Длина в единицах UTF-16 (DWrite считает позиции в них): байты
-			// продолжения пропускаем, четырёхбайтовый символ — две единицы.
-			const auto units = [](std::string_view v)
+			const auto u = static_cast<unsigned char>(ch);
+			if ((u & 0xC0U) == 0x80U)
+				continue;
+			n += (u >= 0xF0U) ? 2U : 1U;
+		}
+		return static_cast<std::size_t>(n);
+	};
+	// x позиции внутри раскладки (в её координатах).
+	const auto hit_x = [](IDWriteTextLayout* layout, UINT32 pos) -> float
+	{
+		FLOAT x = 0.0F;
+		FLOAT y = 0.0F;
+		DWRITE_HIT_TEST_METRICS m{};
+		if (layout == nullptr || FAILED(layout->HitTestTextPosition(pos, FALSE, &x, &y, &m)))
+			return 0.0F;
+		return x;
+	};
+	// Абсолютный байтовый диапазон → отрезок на экране по самой раскладке.
+	const auto span = [&](const RowDraw& d, std::size_t a, std::size_t b, float& x1, float& x2) -> bool
+	{
+		if (d.slot == nullptr || d.slot->layout == nullptr)
+			return false;
+		const std::size_t off0 = a - d.line_start;
+		const std::size_t off1 = b - d.line_start;
+		if (off0 < d.from || off1 > d.to || off0 >= off1)
+			return false;
+		const UINT32 p0 = static_cast<UINT32>(units(d.bytes.substr(d.from, off0 - d.from)));
+		const UINT32 p1 = static_cast<UINT32>(units(d.bytes.substr(d.from, off1 - d.from)));
+		if (p1 <= p0)
+			return false;
+		const float base = text_x0() + d.slice_x - scroll_x;
+		x1 = base + hit_x(d.slot->layout, p0);
+		x2 = base + hit_x(d.slot->layout, p1);
+		return x2 > x1;
+	};
+	// Фон диапазонов (пометки замен, найденное) — под буквами.
+	const auto fill_bands = [&](const std::vector<std::pair<std::size_t, std::size_t>>& bands,
+								const D2D1_COLOR_F& color)
+	{
+		brush_->SetColor(color);
+		for (const RowDraw& d : draws)
+		{
+			for (const auto& band : bands)
 			{
-				std::size_t n = 0;
-				for (const char ch : v)
-				{
-					const auto u = static_cast<unsigned char>(ch);
-					if ((u & 0xC0U) == 0x80U)
-						continue;
-					n += (u >= 0xF0U) ? 2U : 1U;
-				}
-				return static_cast<std::size_t>(n);
-			};
-			std::vector<DWRITE_TEXT_RANGE> want;
-			if (mark_brush_ != nullptr)
-			{
-				// Пометки — смещения в буфере, ряд — смещения в строке.
-				const std::size_t line_start = ed.buffer().line_start(i);
-				const std::size_t abs_from = line_start + from_byte;
-				const std::size_t abs_to = line_start + to_byte;
-				for (const auto& m : yofy_marks)
-				{
-					const std::size_t a = std::max(m.first, abs_from);
-					const std::size_t b = std::min(m.second, abs_to);
-					if (a >= b)
-						continue;
-					const auto s0 = static_cast<UINT32>(units(bytes.substr(from_byte, a - abs_from)));
-					const auto s1 = static_cast<UINT32>(units(bytes.substr(from_byte, b - abs_from)));
-					if (s1 > s0)
-						want.push_back(DWRITE_TEXT_RANGE{s0, s1 - s0});
-				}
-			}
-			bool same = want.size() == slot->mark_ranges.size();
-			for (std::size_t k = 0; same && k < want.size(); ++k)
-				same = want[k].startPosition == slot->mark_ranges[k].startPosition &&
-					want[k].length == slot->mark_ranges[k].length;
-			if (!same)
-			{
-				for (const DWRITE_TEXT_RANGE& r : slot->mark_ranges)
-				{
-					slot->layout->SetDrawingEffect(nullptr, r);
-					slot->layout->SetUnderline(FALSE, r);
-				}
-				for (const DWRITE_TEXT_RANGE& r : want)
-				{
-					slot->layout->SetDrawingEffect(mark_brush_, r);
-					slot->layout->SetUnderline(TRUE, r);
-				}
-				slot->mark_ranges = std::move(want);
+				const std::size_t a = std::max(band.first, d.line_start + d.from);
+				const std::size_t b = std::min(band.second, d.line_start + d.to);
+				float x1 = 0.0F;
+				float x2 = 0.0F;
+				if (!span(d, a, b, x1, x2))
+					continue;
+				rt_->FillRectangle(D2D1::RectF(x1, d.y + 1.0F, x2, d.y + lh - 1.0F), brush_);
 			}
 		}
-		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
-		const float slice_x = ed.row_width(row, from_byte);
-		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + slice_x - scroll_x, line_y), slot->layout, brush_,
+	};
+
+	// Прямоугольники слова под вопросом — по раскладке ряда, поэтому рамка
+	// стоит ровно по буквам (даже при переносе слов и крупном кегле).
+	word_rects.clear();
+	if (word_highlight.second > word_highlight.first)
+	{
+		for (const RowDraw& d : draws)
+		{
+			const std::size_t a = std::max(word_highlight.first, d.line_start + d.from);
+			const std::size_t b = std::min(word_highlight.second, d.line_start + d.to);
+			float x1 = 0.0F;
+			float x2 = 0.0F;
+			if (!span(d, a, b, x1, x2))
+				continue;
+			word_rects.push_back(D2D1::RectF(x1, d.y + 1.0F, x2, d.y + lh - 1.0F));
+		}
+	}
+
+	// Фон пометки ([Colors] ColorBackMark), найденного и слова под вопросом —
+	// под буквами: заливка не «съедает» сами буквы. Текст пометки красится
+	// ниже, drawing-эффектом раскладки; рамка слова рисуется поверх
+	// затемнения панели вопросов.
+	fill_bands(yofy_marks, yofy_back_color_);
+	fill_bands(marks, D2D1::ColorF(0.95F, 0.80F, 0.20F, 0.35F));
+	if (!word_rects.empty())
+	{
+		brush_->SetColor(D2D1::ColorF(0.72F, 0.16F, 0.16F, 0.30F));
+		for (const D2D1_RECT_F& rect : word_rects)
+			rt_->FillRectangle(rect, brush_);
+	}
+
+	// Сами буквы: цвет и подчёркивание пометки ([Colors] ColorMark) —
+	// drawing effect и SetUnderline на диапазон раскладки.
+	brush_->SetColor(theme_.text);
+	for (RowDraw& d : draws)
+	{
+		std::vector<DWRITE_TEXT_RANGE> want;
+		if (mark_brush_ != nullptr)
+		{
+			const std::size_t abs_from = d.line_start + d.from;
+			const std::size_t abs_to = d.line_start + d.to;
+			for (const auto& m : yofy_marks)
+			{
+				const std::size_t a = std::max(m.first, abs_from);
+				const std::size_t b = std::min(m.second, abs_to);
+				if (a >= b)
+					continue;
+				const auto s0 = static_cast<UINT32>(units(d.bytes.substr(d.from, a - abs_from)));
+				const auto s1 = static_cast<UINT32>(units(d.bytes.substr(d.from, b - abs_from)));
+				if (s1 > s0)
+					want.push_back(DWRITE_TEXT_RANGE{ s0, s1 - s0 });
+			}
+		}
+		bool same = want.size() == d.slot->mark_ranges.size();
+		for (std::size_t k = 0; same && k < want.size(); ++k)
+			same = want[k].startPosition == d.slot->mark_ranges[k].startPosition &&
+				   want[k].length == d.slot->mark_ranges[k].length;
+		if (!same)
+		{
+			for (const DWRITE_TEXT_RANGE& r : d.slot->mark_ranges)
+			{
+				d.slot->layout->SetDrawingEffect(nullptr, r);
+				d.slot->layout->SetUnderline(FALSE, r);
+			}
+			for (const DWRITE_TEXT_RANGE& r : want)
+			{
+				d.slot->layout->SetDrawingEffect(mark_brush_, r);
+				d.slot->layout->SetUnderline(TRUE, r);
+			}
+			d.slot->mark_ranges = std::move(want);
+		}
+		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + d.slice_x - scroll_x, d.y), d.slot->layout, brush_,
 							D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
+
 	// Лишние раскладки выбрасываем, чтобы кэш не рос.
 	for (auto it = cache_.begin(); it != cache_.end();)
 	{
@@ -1247,11 +1300,11 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		rt_->FillRectangle(D2D1::RectF(0.0F, text_y0, width_dip_, text_y0 + text_h), dim_brush_);
 
 	// Слово, про которое спрашивает ёфикация, подсвечиваем в тексте — как в
-	// AskPanel оригинала: видно, к чему относится вопрос. Подсветка живёт и
-	// между вопросами (весь проход), поэтому не мигает.
-	if (word_highlight.second > word_highlight.first)
-		draw_word_highlight(ed, scroll_x, scroll_y, text_h, word_highlight.first,
-							word_highlight.second);
+	// AskPanel оригинала: видно, к чему относится вопрос. Прямоугольники
+	// посчитаны по раскладке ряда, поэтому рамка стоит ровно по буквам.
+	brush_->SetColor(D2D1::ColorF(0.95F, 0.38F, 0.30F, 0.95F));
+	for (const D2D1_RECT_F& rect : word_rects)
+		rt_->DrawRectangle(rect, brush_, 1.0F);
 
 	if (find != nullptr)
 		draw_find_bar(*find);

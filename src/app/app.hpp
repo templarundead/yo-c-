@@ -186,6 +186,12 @@ private:
 	void ask_char(wchar_t ch);
 	void ask_click(float x, float y);
 	void ask_mouse_move(float x, float y);
+	// Снять подсветку «под мышью» у всех элементов (потеря фокуса окна,
+	// WM_MOUSELEAVE): иначе кнопка остаётся подсвеченной, хотя курсор ушёл.
+	void clear_hover();
+	// Просим WM_MOUSELEAVE один раз: без него подсветка кнопки «застывала»
+	// после того, как курсор ушёл из окна.
+	void track_mouse_leave();
 	[[nodiscard]] int ask_button_at(float x, float y) const;
 	void scroll_line_into_view(std::size_t line);
 	// Прокрутить к ряду (при переносе слов строка — несколько рядов).
@@ -305,6 +311,7 @@ private:
 	int open_menu_ = -1;  // индекс открытого меню
 	int hot_item_ = -1;	  // подсвеченный пункт выпадающего списка
 	int hot_title_ = -1;  // подсвеченный заголовок
+	bool mouse_tracking_ = false; // TrackMouseEvent уже вызван
 	std::vector<D2D1_RECT_F> menu_item_rects_;
 	D2D1_RECT_F menu_panel_{};
 	std::shared_ptr<TextBuffer> buf_;

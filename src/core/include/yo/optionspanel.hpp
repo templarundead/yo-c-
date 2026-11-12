@@ -143,6 +143,9 @@ struct OptionRowBox
 	bool path = false;	 // строка выбора файла
 	bool tab = false;	 // заголовок вкладки
 	bool tab_active = false;
+	// Справа в строке стоят кнопки «−»/«+»: значение рисуется до них, иначе
+	// число/имя шрифта уезжало под кнопки и обрезалось.
+	float value_inset = 0.0F;
 	float x = 0.0F;
 	float y = 0.0F;
 	float w = 0.0F;
