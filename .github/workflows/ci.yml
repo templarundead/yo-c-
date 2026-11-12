@@ -95,20 +95,12 @@ jobs:
             exit 1
           }
 
-      - name: Диагностика кодировки аргументов (временный шаг)
-        shell: pwsh
-        run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $acp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage').ACP
-          Write-Host "::warning::ACP системы: $acp"
-          ctest --test-dir build/win-msvc-release -N | Select-Object -First 4
-          ctest --test-dir build/win-msvc-release -R "регистр" --output-on-failure 2>&1 |
-            Select-Object -Last 8
-          Write-Host "::warning::ctest -R регистр: exit=$LASTEXITCODE"
-
       - name: Тесты
         shell: pwsh
         run: |
+          $count = (ctest --test-dir build/win-msvc-release -N 2>&1 |
+            Select-String -Pattern '^\s*Test #').Count
+          Write-Host "::notice::ctest зарегистрировал кейсов: $count"
           ctest --test-dir build/win-msvc-release --output-on-failure 2>&1 |
             Tee-Object -FilePath tests.log
           if ($LASTEXITCODE -ne 0) {
