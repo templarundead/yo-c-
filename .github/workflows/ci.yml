@@ -99,7 +99,8 @@ jobs:
         shell: pwsh
         run: |
           $count = (ctest --test-dir build/win-msvc-release -N 2>&1 |
-            Select-String -Pattern '^\s*Test #').Count
+            Select-String -Pattern 'Total Tests: (\d+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value })
           Write-Host "::notice::ctest зарегистрировал кейсов: $count"
           ctest --test-dir build/win-msvc-release --output-on-failure 2>&1 |
             Tee-Object -FilePath tests.log
