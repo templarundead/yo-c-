@@ -662,6 +662,10 @@ void App::on_create()
 	apply_mark_colors(); // [Colors] ColorMark / ColorBackMark
 	sync_metrics();
 	apply_word_wrap(); // [Yo] WordWrap (в оригинале по умолчанию включён)
+	// Словарь читаем сразу, а не при первом проходе: в оригинале Dic загружен
+	// в FormCreate, поэтому «Ёфицировать» из меню доступна с первого клика
+	// (раньше пункт включался только после прохода из контекстного меню).
+	(void)ensure_yoficator(/*quiet=*/true);
 
 	build_menus();
 	setup_accels();
@@ -1125,6 +1129,8 @@ void App::update_menu_checks()
 	const bool has_sel = ed_ != nullptr && ed_->has_selection();
 	const bool can_undo = buf_ != nullptr && buf_->can_undo();
 	const bool can_redo = buf_ != nullptr && buf_->can_redo();
+	// DicExist оригинала: словарь загружен (это делается в on_create, поэтому
+	// «Ёфицировать» доступна сразу после старта, как в оригинале).
 	const bool has_dict = dict_ != nullptr;
 	const bool has_marks = !yofy_marks_.empty();
 	const bool has_usersel = dict_ != nullptr && dict_->has_user_sel();
@@ -4362,7 +4368,7 @@ Options App::yofy_options() const
 	return opts;
 }
 
-bool App::ensure_yoficator()
+bool App::ensure_yoficator(bool quiet)
 {
 	if (yofy_)
 		return true;
@@ -4371,13 +4377,14 @@ bool App::ensure_yoficator()
 	// имена разрешаются от каталога программы.
 	const std::filesystem::path dict_path = dictionary_path(false);
 	const std::filesystem::path regex_path = dictionary_path(true);
-	if (dict_path.empty())
+	if (dict_path.empty() || !std::filesystem::exists(dict_path))
 	{
-		MessageBoxW(hwnd_,
-					L"Не найден словарь yox.dat.\n"
-					L"Положите yox.dat и yo_regexpr.dat рядом с программой "
-					L"(или в каталог data) и повторите.",
-					L"Ё", MB_ICONWARNING);
+		if (!quiet)
+			MessageBoxW(hwnd_,
+						L"Не найден словарь yox.dat.\n"
+						L"Положите yox.dat и yo_regexpr.dat рядом с программой "
+						L"(или в каталог data) и повторите.",
+						L"Ё", MB_ICONWARNING);
 		return false;
 	}
 
@@ -4385,7 +4392,8 @@ bool App::ensure_yoficator()
 	auto dict = Dictionary::load(dict_path, &issues);
 	if (!dict)
 	{
-		MessageBoxW(hwnd_, L"Не удалось загрузить словарь yox.dat.", L"Ё", MB_ICONERROR);
+		if (!quiet)
+			MessageBoxW(hwnd_, L"Не удалось загрузить словарь yox.dat.", L"Ё", MB_ICONERROR);
 		return false;
 	}
 	dict_ = std::make_unique<Dictionary>(std::move(*dict));
@@ -4699,21 +4707,20 @@ void App::ask_build_view()
 	// Полоса снизу отнимает место у текста: строка с вопросом должна быть
 	// видна над ней, а не под ней.
 	ask_.inset = layout.bottom ? layout.h : 0.0F;
+	// Видимая область — всё, что осталось от текста после строки меню,
+	// статуса, полосы поиска и панели вопросов (те же слагаемые, что в
+	// Renderer::paint, иначе ряд «уезжает» под панель).
+	const float find_h = show_find_ ? renderer_.find_height() : 0.0F;
 	ed_->set_viewport(renderer_.text_area_width(),
-		std::max(1.0F, renderer_.text_area_height() - ask_.inset));
-	scroll_line_into_view(ask_.line);
-	// Строку с вопросом ставим в самый низ видимой области — так это
-	// выглядит в оригинале: предложение видно прямо над панелью.
-	if (ask_.inset > 0.0F)
-	{
-		const auto first = static_cast<long long>(ed_->first_visible_line());
-		const auto count =
-			std::max<long long>(1, static_cast<long long>(ed_->visible_line_count()));
-		const auto target = static_cast<long long>(ask_.line);
-		const auto delta = target - (first + count - 1);
-		if (delta != 0)
-			ed_->scroll_lines(static_cast<long>(delta));
-	}
+		std::max(1.0F, renderer_.text_area_height() - find_h - ask_.inset));
+	// Прокручиваем к РЯДУ слова, а не к строке: при переносе слов строка
+	// занимает несколько рядов, и слово оставалось под панелью вопросов.
+	std::size_t anchor = 0;
+	if (ask_.has_word)
+		anchor = ask_.word_from;
+	else if (ask_.req.line < buf_->line_count())
+		anchor = buf_->line_start(ask_.req.line);
+	scroll_row_into_view(ed_->row_of_offset(anchor), ask_.inset > 0.0F);
 }
 
 AskView App::ask_view() const
@@ -4744,6 +4751,23 @@ AskView App::ask_view() const
 		view.buttons.push_back(std::move(v));
 	}
 	return view;
+}
+
+void App::scroll_row_into_view(std::size_t row, bool at_bottom)
+{
+	if (!ed_)
+		return;
+	// «Быстрая промотка» (Yo/FastScroll) — как в оригинале: текст под вопрос
+	// не докручивается вообще (GoAndShowPosition вызывается только при
+	// выключенной опции).
+	if (fast_scroll_)
+		return;
+	// Расчёт — в ядре (Editor::scroll_delta_to_reveal_row): прокрутка в рядах,
+	// снизу остаётся `lines_below` рядов промотки (Yo/LinesBelow).
+	const long delta = ed_->scroll_delta_to_reveal_row(
+		row, at_bottom, at_bottom ? std::clamp(lines_below_, 0, 10) : 0);
+	if (delta != 0)
+		ed_->scroll_lines(delta);
 }
 
 void App::scroll_line_into_view(std::size_t line)
@@ -5430,12 +5454,12 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		on_hscroll(LOWORD(wp));
 		return 0;
 	case WM_COMMAND:
-		if (HIWORD(wp) == 0)
-		{
-			on_command(LOWORD(wp));
-			return 0;
-		}
-		break;
+		// HIWORD == 0 — команда из нашего меню, HIWORD == 1 — из таблицы
+		// акселераторов (TranslateAccelerator всегда ставит 1). Раньше вторые
+		// молча отбрасывались, поэтому Ctrl+C/V/A, F9 и остальные «горячие»
+		// клавиши не работали.
+		on_command(LOWORD(wp));
+		return 0;
 	case WM_DROPFILES:
 		on_drop(reinterpret_cast<HDROP>(wp));
 		return 0;

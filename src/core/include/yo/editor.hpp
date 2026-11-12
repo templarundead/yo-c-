@@ -144,6 +144,14 @@ public:
 	[[nodiscard]] std::size_t visible_row_count() const;
 	[[nodiscard]] std::size_t row_count() const; // всего рядов
 	[[nodiscard]] std::size_t row_of_offset(std::size_t offset) const;
+	// Сколько рядов нужно прокрутить, чтобы ряд `row` был виден, — в рядах,
+	// а не в строках: при переносе слов одна строка занимает несколько рядов,
+	// и прокрутка «по строкам» оставляла слово под панелью вопросов.
+	// at_bottom — поставить ряд у нижнего края видимой области, оставив
+	// `margin` рядов ниже него (как «Количество строк промотки»).
+	// 0 — прокрутка не нужна.
+	[[nodiscard]] long scroll_delta_to_reveal_row(std::size_t row, bool at_bottom,
+												  int margin = 0) const;
 	// Клетки/ширина от начала ряда до байта byte_in_line той же строки.
 	[[nodiscard]] std::size_t row_cells(const Row& row, std::size_t byte_in_line) const;
 	[[nodiscard]] float row_width(const Row& row, std::size_t byte_in_line) const;

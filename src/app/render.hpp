@@ -320,6 +320,9 @@ private:
 	IDWriteTextFormat* fmt_ask_ = nullptr;	  // панель вопросов: по левому краю
 	ID2D1SolidColorBrush* brush_ = nullptr;
 	ID2D1SolidColorBrush* accent_brush_ = nullptr; // подсветка ё
+	// Цвет текста помеченных замен ([Colors] ColorMark): выдаётся раскладке
+	// как drawing effect для нужных диапазонов.
+	ID2D1SolidColorBrush* mark_brush_ = nullptr;
 	ID2D1SolidColorBrush* dim_brush_ = nullptr;	   // затемнение под панелью вопросов
 
 	float dpi_scale_ = 1.0F;
@@ -354,6 +357,9 @@ private:
 		std::wstring text;
 		IDWriteTextLayout* layout = nullptr;
 		bool used = false;
+		// Диапазоны, к которым уже применён цвет/подчёркивание пометки:
+		// эффекты живут в раскладке, поэтому их надо снимать при изменении.
+		std::vector<DWRITE_TEXT_RANGE> mark_ranges;
 	};
 	std::vector<CachedLine> cache_;
 

@@ -590,6 +590,26 @@ std::size_t Editor::line_of_row(std::size_t row) const
 	return lo;
 }
 
+long Editor::scroll_delta_to_reveal_row(std::size_t row, bool at_bottom, int margin) const
+{
+	const auto first = static_cast<long long>(first_visible_row());
+	const auto count = std::max<long long>(1, static_cast<long long>(visible_row_count()));
+	const auto target = static_cast<long long>(row);
+	const auto below = static_cast<long long>(std::max(0, margin));
+	long long delta = 0;
+	if (at_bottom)
+	{
+		// Ряд ставим так, чтобы под ним осталось `below` рядов: он оказывается
+		// над панелью вопросов, а не за ней.
+		delta = target + below - (first + count - 1);
+	}
+	else if (target < first)
+		delta = target - first;
+	else if (target >= first + count)
+		delta = target - (first + count) + 1;
+	return static_cast<long>(delta);
+}
+
 std::size_t Editor::row_of_offset(std::size_t offset) const
 {
 	const std::size_t line = buf_->line_of(offset);

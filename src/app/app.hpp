@@ -119,7 +119,8 @@ private:
 	[[nodiscard]] std::wstring status_text() const;
 	[[nodiscard]] std::string insert_eol_bytes() const;
 
-	bool ensure_yoficator();
+	// quiet — не показывать окна с ошибками (загрузка словаря при старте).
+	bool ensure_yoficator(bool quiet = false);
 	// Ёфикация: F9 — с текущей позиции курсора, Ctrl+F9 — с начала текста
 	// (Yopos1 / Yobegin1 оригинала).
 	void run_yofification(bool from_start = false);
@@ -187,6 +188,10 @@ private:
 	void ask_mouse_move(float x, float y);
 	[[nodiscard]] int ask_button_at(float x, float y) const;
 	void scroll_line_into_view(std::size_t line);
+	// Прокрутить к ряду (при переносе слов строка — несколько рядов).
+	// at_bottom — поставить ряд вниз видимой области (над панелью вопросов),
+	// с запасом `lines_below` рядов ниже него, как «Количество строк промотки».
+	void scroll_row_into_view(std::size_t row, bool at_bottom);
 	// Экран (DIP) → смещение в документе: текст начинается ниже строки меню.
 	[[nodiscard]] std::size_t caret_offset_at(float x, float y) const;
 

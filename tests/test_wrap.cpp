@@ -350,3 +350,73 @@ TEST_CASE("перенос: стресс геометрии в обоих реж�
 		}
 	}
 }
+
+TEST_CASE("прокрутка к ряду: слово остаётся над панелью вопросов", "[wrap]")
+{
+	// Строка из 30 символов при 10 клетках в ряду — три ряда, затем ещё
+	// 20 коротких строк. Вьюпорт в 10 рядов, но под панель вопросов оставляем
+	// только 6 рядов: видимая область стала меньше, и прокрутка «по строкам»
+	// (прежнее поведение) оставляла слово за панелью.
+	auto ed = make_editor("012345678901234567890123456789\n"
+						  "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\n",
+						  true);
+	REQUIRE(ed->word_wrap());
+	ed->set_viewport(100.0F, 120.0F); // шесть рядов в окне — над панелью
+	const std::size_t rows_total = ed->row_count();
+	REQUIRE(rows_total > 20);
+
+	// Ряд в конце строки-«простыни» — это 2-й или 3-й ряд одной строки.
+	const std::size_t last_of_long = ed->row_of_offset(29);
+	REQUIRE(last_of_long > 0);
+
+	long delta = ed->scroll_delta_to_reveal_row(last_of_long, true, 0);
+	REQUIRE(delta != 0);
+	ed->scroll_lines(delta);
+	CHECK(ed->first_visible_row() + ed->visible_row_count() > last_of_long);
+	// Строка слова целиком видна в рядах, а не «за краем».
+	const std::vector<Editor::Row> rows = ed->visible_rows();
+	bool seen = false;
+	for (const Editor::Row& row : rows)
+		seen = seen || (row.line == 0 && row.from <= 29 && row.to > 29);
+	CHECK(seen);
+
+	// С запасом строк промотки слово поднимается выше: снизу остаётся
+	// не меньше `margin` рядов (у границы документа прокрутка упирается,
+	// поэтому проверяем только середину текста).
+	const long delta2 = ed->scroll_delta_to_reveal_row(last_of_long, true, 2);
+	ed->scroll_lines(delta2);
+	const std::size_t first2 = ed->first_visible_row();
+	const std::size_t count2 = ed->visible_row_count();
+	REQUIRE(first2 <= last_of_long);
+	CHECK(last_of_long < first2 + count2);
+	if (first2 > 0 && first2 + count2 < rows_total)
+		CHECK(last_of_long + 3 <= first2 + count2);
+}
+
+TEST_CASE("прокрутка к ряду: без переноса ряд равен строке", "[wrap]")
+{
+	auto ed = make_editor("aaa\nbbb\nccc\nddd\neee\nfff\n", false);
+	ed->set_viewport(100.0F, 40.0F);
+	const std::size_t count = ed->visible_row_count();
+	REQUIRE(count >= 2);
+	CHECK(ed->first_visible_row() == 0);
+	// Ряды в окне — прокрутки нет, в том числе у последнего видимого.
+	CHECK(ed->scroll_delta_to_reveal_row(1, false, 0) == 0);
+	CHECK(ed->scroll_delta_to_reveal_row(count - 1, false, 0) == 0);
+	// Первый ряд ниже окна — прокручиваем ровно на один ряд.
+	CHECK(ed->scroll_delta_to_reveal_row(count, false, 0) == 1);
+	ed->scroll_lines(1);
+	CHECK(ed->first_visible_row() == 1);
+	CHECK(ed->scroll_delta_to_reveal_row(count, false, 0) == 0);
+	// Выше окна — обратно вверх.
+	CHECK(ed->scroll_delta_to_reveal_row(0, false, 0) == -1);
+	// at_bottom тянет ряд к нижнему краю; у начала документа прокрутка
+	// упирается в ноль, и ряд остаётся первым видимым.
+	ed->scroll_lines(ed->scroll_delta_to_reveal_row(0, true, 0));
+	CHECK(ed->first_visible_row() == 0);
+	// Дальше от границы ряд действительно встаёт последним видимым.
+	ed->scroll_lines(ed->scroll_delta_to_reveal_row(count + 1, true, 0));
+	REQUIRE(ed->first_visible_row() > 0);
+	CHECK(ed->first_visible_row() + ed->visible_row_count() - 1 == count + 1);
+	CHECK(ed->scroll_delta_to_reveal_row(count + 1, true, 0) == 0);
+}

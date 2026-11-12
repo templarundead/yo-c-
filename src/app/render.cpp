@@ -38,6 +38,11 @@ void Renderer::shutdown()
 		accent_brush_->Release();
 		accent_brush_ = nullptr;
 	}
+	if (mark_brush_ != nullptr)
+	{
+		mark_brush_->Release();
+		mark_brush_ = nullptr;
+	}
 	if (dim_brush_ != nullptr)
 	{
 		dim_brush_->Release();
@@ -90,9 +95,10 @@ bool Renderer::init(HWND hwnd, float font_size)
 {
 	hwnd_ = hwnd;
 	font_size_ = font_size;
-	// Панель вопросов — того же размера, что стартовый текст, но не меньше
-	// 12 DIP; при зуме она не масштабируется.
-	ask_font_size_ = std::clamp(font_size, 12.0F, 40.0F);
+	// Панель вопросов, меню и окно настроек — фиксированный «интерфейсный»
+	// кегль: размер шрифта текста (FontSize, Ctrl+±, диалог «Шрифт») на них
+	// не влияет вообще.
+	ask_font_size_ = 15.0F;
 	if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), nullptr,
 								 reinterpret_cast<void**>(&factory_))))
 		return false;
@@ -304,6 +310,11 @@ bool Renderer::create_render_target(HWND hwnd)
 		accent_brush_->Release();
 		accent_brush_ = nullptr;
 	}
+	if (mark_brush_ != nullptr)
+	{
+		mark_brush_->Release();
+		mark_brush_ = nullptr;
+	}
 	if (dim_brush_ != nullptr)
 	{
 		dim_brush_->Release();
@@ -334,6 +345,8 @@ bool Renderer::create_render_target(HWND hwnd)
 		return false;
 	if (FAILED(rt_->CreateSolidColorBrush(D2D1::ColorF(0.0F, 0.0F, 0.0F, 0.45F), &dim_brush_)))
 		dim_brush_ = nullptr;
+	if (FAILED(rt_->CreateSolidColorBrush(yofy_text_color_, &mark_brush_)))
+		mark_brush_ = nullptr;
 	return SUCCEEDED(rt_->CreateSolidColorBrush(theme_.accent, &accent_brush_));
 }
 
@@ -974,10 +987,11 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 
 	// Подсветка ёфикационных замен (как Mark оригинала) и найденного —
 	// под выделением и под текстом.
+	// Фон пометки ([Colors] ColorBackMark) — под текстом; сам текст красится
+	// ниже, drawing-эффектом раскладки (см. цикл отрисовки рядов).
 	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, yofy_back_color_);
-	// Цвет пометки (ColorMark) — линия под заменой: в оригинале им красились
-	// сами буквы, у нас текст перекрашивать нельзя (раскладка рядов).
-	draw_marks(ed, scroll_x, scroll_y, text_h, yofy_marks, yofy_text_color_, 0.12F);
+	if (mark_brush_ != nullptr)
+		mark_brush_->SetColor(yofy_text_color_);
 	draw_marks(ed, scroll_x, scroll_y, text_h, marks, D2D1::ColorF(0.95F, 0.80F, 0.20F, 0.35F));
 
 	// Полоса выделения рисуется под текстом.
@@ -1139,6 +1153,64 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 
 		if (slot->layout == nullptr)
 			continue;
+
+		// Цвет и подчёркивание пометки ([Colors] ColorMark) на самих буквах:
+		// DWrite рисует текст цветом drawing-эффекта, поэтому нужные
+		// диапазоны красим кистью пометки. Эффекты хранятся в раскладке,
+		// а раскладка кэшируется — при смене пометок старые снимаем.
+		{
+			// Длина в единицах UTF-16 (DWrite считает позиции в них): байты
+			// продолжения пропускаем, четырёхбайтовый символ — две единицы.
+			const auto units = [](std::string_view v)
+			{
+				std::size_t n = 0;
+				for (const char ch : v)
+				{
+					const auto u = static_cast<unsigned char>(ch);
+					if ((u & 0xC0U) == 0x80U)
+						continue;
+					n += (u >= 0xF0U) ? 2U : 1U;
+				}
+				return static_cast<std::size_t>(n);
+			};
+			std::vector<DWRITE_TEXT_RANGE> want;
+			if (mark_brush_ != nullptr)
+			{
+				// Пометки — смещения в буфере, ряд — смещения в строке.
+				const std::size_t line_start = ed.buffer().line_start(i);
+				const std::size_t abs_from = line_start + from_byte;
+				const std::size_t abs_to = line_start + to_byte;
+				for (const auto& m : yofy_marks)
+				{
+					const std::size_t a = std::max(m.first, abs_from);
+					const std::size_t b = std::min(m.second, abs_to);
+					if (a >= b)
+						continue;
+					const auto s0 = static_cast<UINT32>(units(bytes.substr(from_byte, a - abs_from)));
+					const auto s1 = static_cast<UINT32>(units(bytes.substr(from_byte, b - abs_from)));
+					if (s1 > s0)
+						want.push_back(DWRITE_TEXT_RANGE{s0, s1 - s0});
+				}
+			}
+			bool same = want.size() == slot->mark_ranges.size();
+			for (std::size_t k = 0; same && k < want.size(); ++k)
+				same = want[k].startPosition == slot->mark_ranges[k].startPosition &&
+					want[k].length == slot->mark_ranges[k].length;
+			if (!same)
+			{
+				for (const DWRITE_TEXT_RANGE& r : slot->mark_ranges)
+				{
+					slot->layout->SetDrawingEffect(nullptr, r);
+					slot->layout->SetUnderline(FALSE, r);
+				}
+				for (const DWRITE_TEXT_RANGE& r : want)
+				{
+					slot->layout->SetDrawingEffect(mark_brush_, r);
+					slot->layout->SetUnderline(TRUE, r);
+				}
+				slot->mark_ranges = std::move(want);
+			}
+		}
 		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
 		const float slice_x = ed.row_width(row, from_byte);
 		rt_->DrawTextLayout(D2D1::Point2F(text_x0() + slice_x - scroll_x, line_y), slot->layout, brush_,
@@ -1201,11 +1273,22 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 			rt_->Release();
 			rt_ = nullptr;
 		}
-		if (brush_ != nullptr)
+		// После потери устройства все кисти недействительны — освобождаем их
+		// вместе с кэшем раскладок, ссылающимся на кисть пометки.
+		for (ID2D1SolidColorBrush** b : {&brush_, &accent_brush_, &dim_brush_, &mark_brush_})
 		{
-			brush_->Release();
-			brush_ = nullptr;
+			if (*b != nullptr)
+			{
+				(*b)->Release();
+				*b = nullptr;
+			}
 		}
+		for (CachedLine& c : cache_)
+		{
+			if (c.layout != nullptr)
+				c.layout->Release();
+		}
+		cache_.clear();
 	}
 }
 
