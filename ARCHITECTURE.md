@@ -659,9 +659,11 @@ piece table → итерация по pieces → encode (исходная код
   `NoVarOnly`, `VarOnly`, `WordWrap`, `ProposeLast`, `FBFormat`,
   `AutoUnicode`, `RegExprs`, `RecallLastFile`, `ToConfirmClose`,
   `ToConfirmAbbr`, `ToConfirmEllipsis`, `ToConfirmCap`, `LinesBelow`,
-  `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`,
-  `ButtonHotKeys`, `WordsBufferLength`, геометрия окна; `[Colors]`
-  `ColorMark`/`ColorBackMark`; `[Internal]` `UTF8Warning`/`UTFLength`;
+  `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`
+  (применяются через `Renderer::set_editor_font`), `ButtonHotKeys`,
+  `WordsBufferLength`, геометрия окна; `[Colors]`
+  `ColorMark`/`ColorBackMark` (COLORREF → `Renderer::set_yofy_colors`);
+  `[Internal]` `UTF8Warning`/`UTFLength`;
   `[ToolBar] ShowToolBar`; `[Files] Name1..9`/`LastFileN`.
   Наши расширения: `SilentYofy` и `Maximized`. Старый файл подходит без
   правок.
@@ -687,6 +689,15 @@ piece table → итерация по pieces → encode (исходная код
   значения. Состав строк вкладок «Ёфикация» и «Редактор» — построчный
   перенос `OptionsPage.dfm` (порядок и подписи), это фиксирует тест
   `настройки: вкладка «…» — пункты и подписи оригинала`.
+- Правила окна настроек — тоже в ядре: `yo::option_enabled` (блокировки
+  строк по `OptionsPage.cbClick`), `yo::options_toggle` (взаимоисключение
+  `VarOnly` ↔ `AlwaysAsk` ↔ `NoVarOnly`), `yo::options_normalize`
+  (согласование значений из ini), `yo::options_color_text` /
+  `options_color_from_ini` (COLORREF и совместимость со старыми индексами).
+  GUI вызывает диалоги (`ChooseFont`, `ChooseColor`) и передаёт результат.
+- Диапазон слова для подсветки считает `yo::ask_word_bytes` (кодовые точки
+  → байты строки UTF-8), а не GUI: ошибка пересчёта выглядела как
+  «подсветка уехала / пропала».
 - Файл читается при старте (до создания окна — из него берётся геометрия),
   пишется при изменении настроек (шрифт, `AlwaysAsk`, `SilentYofy`) и при
   закрытии окна. Неизвестные ключи сохраняются: файл сначала читается

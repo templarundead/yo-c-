@@ -323,3 +323,36 @@ TEST_CASE("панель вопросов: полоса не вылезает н�
 		CHECK(b.y + b.h <= in.client_h);
 	}
 }
+
+TEST_CASE("askpanel: байтовый диапазон слова для подсветки", "[askpanel]")
+{
+	// Кириллица в UTF-8 — по 2 байта на букву: смещения в кодовых точках
+	// и в байтах не совпадают, поэтому пересчёт должен быть точным.
+	const std::string line = "все ли всё равно";           // 16 символов
+	const AskWordRange first = ask_word_bytes(line, 0, 3); // «все»
+	REQUIRE(first.valid());
+	CHECK(first.from == 0);
+	CHECK(first.to == 6);
+	CHECK(line.substr(first.from, first.to - first.from) == "все");
+
+	const AskWordRange yo = ask_word_bytes(line, 7, 3); // «всё»
+	REQUIRE(yo.valid());
+	CHECK(line.substr(yo.from, yo.to - yo.from) == "всё");
+
+	// Границы: offset за концом строки и нулевая длина — пустой диапазон.
+	CHECK_FALSE(ask_word_bytes(line, line.size(), 5).valid());
+	CHECK_FALSE(ask_word_bytes(line, 3, 0).valid());
+	CHECK_FALSE(ask_word_bytes("", 0, 3).valid());
+
+	// Длина больше остатка строки подрезается, а не выходит за границы.
+	const AskWordRange tail = ask_word_bytes(line, 11, 100);
+	REQUIRE(tail.valid());
+	CHECK(tail.to <= line.size());
+	CHECK(line.substr(tail.from, tail.to - tail.from) == "равно");
+
+	// Суррогаты (4-байтовый UTF-8) считаются как один кодпоинт.
+	const std::string emoji = "\xF0\x9F\x98\x80 ё";
+	const AskWordRange e = ask_word_bytes(emoji, 2, 1);
+	REQUIRE(e.valid());
+	CHECK(emoji.substr(e.from, e.to - e.from) == "ё");
+}

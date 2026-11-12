@@ -181,6 +181,12 @@ TEST_CASE("настройки: вкладка «Редактор» — пунк�
 	CHECK(find_row(layout, OptionChoice::mark_color)->value == options_color_at(0).name);
 	CHECK(find_row(layout, OptionChoice::back_mark_color)->value == options_color_at(1).name);
 	CHECK(find_row(layout, OptionChoice::font_size)->value == "17");
+	// Выбранный шрифт показывается вместе с кеглем (как TFontDialog).
+	OptionsState named = state;
+	named.font_name = "Cascadia Mono";
+	named.font_size = 11.0F;
+	const OptionsLayout named_layout = layout_options(named, 1200.0F, 900.0F, 15.0F);
+	CHECK(find_row(named_layout, OptionChoice::font_size)->value == "Cascadia Mono, 11");
 	CHECK_FALSE(find_row(layout, OptionChoice::mark)->checked); // mark = false в состоянии
 
 	int plus = -1;
@@ -292,32 +298,117 @@ TEST_CASE("настройки: клик по строке и по кнопкам
 	}
 }
 
-TEST_CASE("настройки: палитра цветов пометки", "[options]")
+TEST_CASE("настройки: цвета пометки — COLORREF, как в оригинале", "[options]")
 {
 	REQUIRE(options_colors().size() >= 4);
 	// Умолчания оригинала: ColorMark=clBlue, ColorBackMark=clYellow.
-	CHECK(options_color_at(0).name == "синий");
-	CHECK(options_color_at(0).rgb == 0x00FF0000U);
-	CHECK(options_color_at(1).name == "жёлтый");
-	CHECK(options_color_at(1).rgb == 0x0000FFFFU);
+	CHECK(options_color_at(0).rgb == kColorBlue);
+	CHECK(options_color_text(kColorBlue) == "синий");
+	CHECK(options_color_text(kColorYellow) == "жёлтый");
+	CHECK(options_color_text(kColorGreen) == "зелёный");
 
-	// Переход по кругу и отрицательные индексы (после «минус» без проверки).
-	const int count = static_cast<int>(options_colors().size());
-	CHECK(options_next_color(0) == 1);
-	CHECK(options_next_color(count - 1) == 0);
-	CHECK(options_next_color(-1) == 0);
-	CHECK(options_color_at(count).name == options_color_at(0).name);
-	CHECK(options_color_at(-count).name == options_color_at(0).name);
+	// Любой цвет из ColorDialog показывается как #RRGGBB (COLORREF = BGR).
+	CHECK(options_color_text(0x00000000U) == "чёрный");
+	CHECK(options_color_text(0x00112233U) == "#332211");
+	CHECK(options_color_text(0x00FF8000U) == "#0080FF");
+	CHECK(options_color_text(0x00ABCDEFU) == "#EFCDAB");
+
+	// Значение из ini: COLORREF как есть, а индексы 0..5 старых сборок
+	// yo-c- понимаются как палитра.
+	CHECK(options_color_from_ini(kColorBlue) == kColorBlue);
+	CHECK(options_color_from_ini(0x00112233LL) == 0x00112233U);
+	CHECK(options_color_from_ini(0) == options_color_at(0).rgb);
+	CHECK(options_color_from_ini(1) == options_color_at(1).rgb);
+	CHECK(options_color_from_ini(5) == options_color_at(5).rgb);
+	// Мусор (отрицательное, больше 0xFFFFFF) — безопасный чёрный.
+	CHECK(options_color_from_ini(-5) == kColorBlack);
+	CHECK(options_color_from_ini(0x1234567LL) == kColorBlack);
 
 	OptionsState state;
-	state.mark_color = count - 1;
+	state.mark = true;
+	state.mark_color = 0x00112233U;
 	state.tab = 1;
 	const OptionsLayout layout = layout_options(state, 1200.0F, 900.0F, 15.0F);
-	CHECK(find_row(layout, OptionChoice::mark_color)->value == options_color_at(count - 1).name);
+	CHECK(find_row(layout, OptionChoice::mark_color)->value == "#332211");
+	CHECK(find_row(layout, OptionChoice::back_mark_color)->value == "жёлтый");
+}
+
+TEST_CASE("настройки: VarOnly и AlwaysAsk — либо то, либо другое", "[options]")
+{
+	OptionsState state;
+	state.var_only = true;
+	state.always_ask = false;
+
+	// Включили «Всегда подтверждать замену» — «Только интерактивные» снялось.
+	options_toggle(state, OptionChoice::always_ask);
+	CHECK(state.always_ask);
+	CHECK_FALSE(state.var_only);
+
+	// И наоборот.
+	options_toggle(state, OptionChoice::var_only);
+	CHECK(state.var_only);
+	CHECK_FALSE(state.always_ask);
+
+	// NoVarOnly ↔ VarOnly несовместимы (как в OptionsPage.cbClick).
+	state.always_ask = false;
+	state.var_only = false;
+	state.no_var_only = true;
+	CHECK_FALSE(option_enabled(state, OptionChoice::var_only));
+	CHECK(option_enabled(state, OptionChoice::no_var_only));
+	options_toggle(state, OptionChoice::var_only);
+	CHECK(state.var_only);
+	CHECK_FALSE(state.no_var_only);
+	CHECK_FALSE(option_enabled(state, OptionChoice::no_var_only));
+
+	// Согласование загруженных из ini значений: если остались оба — AlwaysAsk.
+	OptionsState both;
+	both.always_ask = true;
+	both.var_only = true;
+	both.no_var_only = true;
+	options_normalize(both);
+	CHECK(both.always_ask);
+	CHECK_FALSE(both.var_only);
+	// NoVarOnly с AlwaysAsk оригинал разрешал — оставляем как есть.
+	CHECK(both.no_var_only);
+}
+
+TEST_CASE("настройки: блокировки строк как в OptionsPage.cbClick", "[options]")
+{
+	OptionsState state;
+	CHECK(option_enabled(state, OptionChoice::to_confirm_abbr));
+	CHECK(option_enabled(state, OptionChoice::mark_color));
+
+	// AlwaysAsk выключает три «подтверждать …».
+	state.always_ask = true;
+	CHECK_FALSE(option_enabled(state, OptionChoice::to_confirm_abbr));
+	CHECK_FALSE(option_enabled(state, OptionChoice::to_confirm_cap));
+	CHECK_FALSE(option_enabled(state, OptionChoice::to_confirm_ellipsis));
+	CHECK(option_enabled(state, OptionChoice::check_yo));
+
+	// Без «Помечать исправленное» цвета недоступны.
+	state.mark = false;
+	CHECK_FALSE(option_enabled(state, OptionChoice::mark_color));
+	CHECK_FALSE(option_enabled(state, OptionChoice::back_mark_color));
+
+	// Раскладка показывает доступность строк.
+	state.tab = 1;
+	const OptionsLayout layout = layout_options(state, 1200.0F, 900.0F, 15.0F);
+	CHECK_FALSE(find_row(layout, OptionChoice::mark_color)->enabled);
+	CHECK(find_row(layout, OptionChoice::word_wrap)->enabled);
+
+	state.tab = 0;
+	const OptionsLayout yofy = layout_options(state, 1200.0F, 900.0F, 15.0F);
+	CHECK_FALSE(find_row(yofy, OptionChoice::to_confirm_abbr)->enabled);
+	CHECK(find_row(yofy, OptionChoice::propose_last)->enabled);
 }
 
 TEST_CASE("настройки: размер шрифта без хвостов", "[options]")
 {
+	OptionsState state;
+	CHECK(options_font_label(state) == "15"); // без имени — только кегль
+	state.font_name = "Consolas";
+	state.font_size = 12.6F;
+	CHECK(options_font_label(state) == "Consolas, 13");
 	CHECK(options_font_text(15.0F) == "15");
 	CHECK(options_font_text(15.4F) == "15");
 	CHECK(options_font_text(16.0F) == "16");

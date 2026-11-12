@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 
 namespace yo {
 
@@ -29,14 +30,18 @@ std::string trim_size(float size)
 	return std::to_string(std::max(1, rounded));
 }
 
-// Палитра цветов замен — как ColorMark/ColorBackMark в [Colors] оригинала.
-constexpr std::array<OptionsColor, 6> kColors = { {
-	{ 0x00FF0000U, "синий" },
-	{ 0x0000FFFFU, "жёлтый" },
-	{ 0x00008000U, "зелёный" },
-	{ 0x000000FFU, "красный" },
-	{ 0x00FFFF00U, "голубой" },
-	{ 0x00808080U, "серый" },
+// Стандартные цвета (ColorDialog) и значения по умолчанию оригинала:
+// clMark = clBlue, clBackMark = clYellow.
+constexpr std::array<OptionsColor, 9> kColors = { {
+	{ kColorBlue, "синий" },
+	{ kColorYellow, "жёлтый" },
+	{ kColorGreen, "зелёный" },
+	{ kColorRed, "красный" },
+	{ kColorAqua, "голубой" },
+	{ kColorGray, "серый" },
+	{ kColorBlack, "чёрный" },
+	{ kColorWhite, "белый" },
+	{ 0x00800000U, "тёмно-синий" },
 } };
 
 // Строка вкладки в описании раскладки.
@@ -88,9 +93,9 @@ std::vector<RowDef> editor_rows(const OptionsState& s)
 		{ OptionChoice::word_wrap, "Заворачивать текст (\"Word wrap\")", {}, true, s.word_wrap, false },
 		{ OptionChoice::recall_last_file, "Запоминать последний файл", {}, true, s.recall_last_file,
 		  false },
-		{ OptionChoice::font_size, "Шрифт", trim_size(s.font_size), false, false, false },
-		{ OptionChoice::mark_color, "Цвет", options_color_at(s.mark_color).name, false, false, false },
-		{ OptionChoice::back_mark_color, "Фон", options_color_at(s.back_mark_color).name, false, false,
+		{ OptionChoice::font_size, "Шрифт", options_font_label(s), false, false, false },
+		{ OptionChoice::mark_color, "Цвет", options_color_text(s.mark_color), false, false, false },
+		{ OptionChoice::back_mark_color, "Фон", options_color_text(s.back_mark_color), false, false,
 		  false },
 		{ OptionChoice::auto_unicode, "Автораспознавать формат Unicode", {}, true, s.auto_unicode,
 		  false },
@@ -127,13 +132,152 @@ const OptionsColor& options_color_at(int index)
 	return kColors[static_cast<std::size_t>(i)];
 }
 
-int options_next_color(int current)
+std::string options_color_text(std::uint32_t rgb)
 {
-	const int count = static_cast<int>(kColors.size());
-	return ((current % count) + 1) % count;
+	for (const OptionsColor& c : kColors)
+		if (c.rgb == rgb)
+			return c.name;
+	// Любой другой цвет — как в вебе: COLORREF хранит байты BGR.
+	const auto byte = [](std::uint32_t v) { return static_cast<unsigned>(v & 0xFFU); };
+	char buf[16];
+	std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", byte(rgb), byte(rgb >> 8U), byte(rgb >> 16U));
+	return std::string(buf);
+}
+
+std::uint32_t options_color_from_ini(long long value)
+{
+	// Предыдущие сборки yo-c- писали индекс палитры (0..5) — понимаем и его.
+	if (value >= 0 && value < static_cast<long long>(kColors.size()) && value <= 5)
+		return kColors[static_cast<std::size_t>(value)].rgb;
+	if (value < 0 || value > 0xFFFFFFLL)
+		return kColorBlack;
+	return static_cast<std::uint32_t>(value);
+}
+
+bool option_enabled(const OptionsState& state, OptionChoice what)
+{
+	switch (what)
+	{
+	// OptionsPage.cbClick: AlwaysAsk выключает три «подтверждать».
+	case OptionChoice::to_confirm_abbr:
+	case OptionChoice::to_confirm_cap:
+	case OptionChoice::to_confirm_ellipsis:
+		return !state.always_ask;
+	// ... и VarOnly ↔ NoVarOnly несовместимы.
+	case OptionChoice::var_only:
+		return !state.no_var_only;
+	case OptionChoice::no_var_only:
+		return !state.var_only;
+	// Кнопки цветов доступны только при «Помечать исправленное».
+	case OptionChoice::mark_color:
+	case OptionChoice::back_mark_color:
+		return state.mark;
+	default:
+		return true;
+	}
+}
+
+void options_normalize(OptionsState& state)
+{
+	// Согласование значений, пришедших из ini. Приоритет — у «безопасных»
+	// режимов: VarOnly («спрашивать про всё») снимается, если включено
+	// «Всегда подтверждать замену» (AlwaysAsk) или «Только бесспорные
+	// замены» (NoVarOnly). Взаимоисключение VarOnly ↔ AlwaysAsk — по
+	// требованию к редактору: либо то, либо другое.
+	if (state.always_ask || state.no_var_only)
+		state.var_only = false;
+}
+
+void options_toggle(OptionsState& state, OptionChoice what)
+{
+	// Взаимоисключающие пары: включаем одно — снимаем другое. Так пункты
+	// «Только интерактивные замены», «Всегда подтверждать замену» и «Только
+	// бесспорные замены» не могут быть включены одновременно.
+	switch (what)
+	{
+	case OptionChoice::var_only:
+		state.var_only = !state.var_only;
+		if (state.var_only)
+		{
+			state.no_var_only = false;
+			state.always_ask = false;
+		}
+		return;
+	case OptionChoice::always_ask:
+		state.always_ask = !state.always_ask;
+		if (state.always_ask)
+			state.var_only = false;
+		return;
+	case OptionChoice::no_var_only:
+		state.no_var_only = !state.no_var_only;
+		if (state.no_var_only)
+			state.var_only = false;
+		return;
+	default:
+		break;
+	}
+
+	const auto flip = [](bool& flag) { flag = !flag; };
+	switch (what)
+	{
+	case OptionChoice::check_yo:
+		flip(state.check_yo);
+		break;
+	case OptionChoice::to_confirm_abbr:
+		flip(state.to_confirm_abbr);
+		break;
+	case OptionChoice::to_confirm_cap:
+		flip(state.to_confirm_cap);
+		break;
+	case OptionChoice::to_confirm_ellipsis:
+		flip(state.to_confirm_ellipsis);
+		break;
+	case OptionChoice::propose_last:
+		flip(state.propose_last);
+		break;
+	case OptionChoice::regexs:
+		flip(state.regexs);
+		break;
+	case OptionChoice::fb_format:
+		flip(state.fb_format);
+		break;
+	case OptionChoice::fast_scroll:
+		flip(state.fast_scroll);
+		break;
+	case OptionChoice::mark:
+		flip(state.mark);
+		break;
+	case OptionChoice::word_wrap:
+		flip(state.word_wrap);
+		break;
+	case OptionChoice::recall_last_file:
+		flip(state.recall_last_file);
+		break;
+	case OptionChoice::auto_unicode:
+		flip(state.auto_unicode);
+		break;
+	case OptionChoice::show_toolbar:
+		flip(state.show_toolbar);
+		break;
+	case OptionChoice::to_confirm_close:
+		flip(state.to_confirm_close);
+		break;
+	case OptionChoice::silent_yofy:
+		flip(state.silent_yofy);
+		break;
+	default:
+		break; // вкладки, числа, цвета и пути переключаются иначе
+	}
 }
 
 std::string options_font_text(float size) { return trim_size(size); }
+
+std::string options_font_label(const OptionsState& state)
+{
+	if (state.font_name.empty())
+		return trim_size(state.font_size);
+	return state.font_name + ", " + trim_size(state.font_size);
+}
 
 int OptionsLayout::row_at(float px, float py) const
 {
@@ -226,6 +370,7 @@ OptionsLayout layout_options(const OptionsState& state, float width, float heigh
 		row.value = d.value;
 		row.check = d.check;
 		row.checked = d.checked;
+		row.enabled = option_enabled(state, d.what);
 		row.path = d.path;
 		row.x = out.x + kPad;
 		row.y = y;

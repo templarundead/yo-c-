@@ -8,6 +8,21 @@
 
 namespace yo {
 
+AskWordRange ask_word_bytes(std::string_view line_utf8, std::size_t offset_cp, std::size_t length_cp)
+{
+	// Кодовые точки считаем тем же декодером, что и остальной текст, поэтому
+	// суррогаты/невалидные байты дают тот же результат, что и при чтении строки.
+	const auto bytes = std::span<const std::uint8_t>(
+		reinterpret_cast<const std::uint8_t*>(line_utf8.data()), line_utf8.size());
+	const UString u32 = decode_line(bytes, Encoding::utf8);
+	const std::size_t from32 = std::min(offset_cp, u32.size());
+	const std::size_t to32 = std::min(from32 + length_cp, u32.size());
+	const std::size_t from = encode_line(UString(u32.substr(0, from32)), Encoding::utf8).size();
+	const std::size_t size =
+		encode_line(UString(u32.substr(from32, to32 - from32)), Encoding::utf8).size();
+	return AskWordRange{ from, from + size };
+}
+
 namespace {
 
 // Убрать последний кодпоинт UTF-8.

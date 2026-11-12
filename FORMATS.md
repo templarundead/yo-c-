@@ -208,13 +208,14 @@ Delphi `string` (AnsiString) — байты CP1251, индексы 1-based.
 > `FBFormat`, `AutoUnicode`, `RegExprs`, `RecallLastFile`, `ToConfirmClose`,
 > `ToConfirmAbbr`, `ToConfirmEllipsis`, `ToConfirmCap`, `LinesBelow`,
 > `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`
-> (пишутся, но не применяются — шрифт редактора фиксирован),
+> (шрифт применяется; диалог выбора — только моноширинные),
 > `ButtonHotKeys`, `WordsBufferLength`, `TextDirectory`, геометрия окна;
 > `[Colors] ColorMark`, `ColorBackMark`; `[Internal] UTF8Warning`,
 > `UTFLength`; `[ToolBar] ShowToolBar`; `[Files] Name1..9`, `LastFileN`.
 > Умолчания совпадают с `ReadIni`. Наши расширения: `[Yo] SilentYofy`
-> («без вопросов») и `[Yo] Maximized` (не в оригинале); `[Colors]` хранит
-> индексы палитры окна настроек, а не `COLORREF` (DEVIATIONS.md).
+> («без вопросов») и `[Yo] Maximized` (не в оригинале). `[Colors]` хранит
+> `COLORREF` (`TColor`), как оригинал; индексы палитры 0..5, которые писала
+> предыдущая сборка yo-c-, при чтении понимаются как палитра.
 > Неизвестные ключи при перезаписи сохраняются (файл читается перед
 > записью), как это делает `TIniFile`.
 

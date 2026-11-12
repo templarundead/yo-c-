@@ -79,6 +79,7 @@ struct OptionsRowView
 	bool path = false;
 	bool tab = false;		 // заголовок вкладки («Ёфикация»/«Редактор»/«Словари»)
 	bool tab_active = false; // активная вкладка — залитая
+	bool enabled = true;	 // доступна (правила блокировок OptionsPage)
 };
 
 struct OptionsButtonView
@@ -227,6 +228,10 @@ public:
 
 	bool set_font_size(float size_dip, HWND hwnd);
 	[[nodiscard]] float font_size() const noexcept { return font_size_; }
+	// Шрифт текста: семейство (пусто — встроенный моноширинный набор) и кегль
+	// в DIP. Выбор — диалогом «Шрифт» окна настроек (как TFontDialog).
+	[[nodiscard]] const std::wstring& font_family() const noexcept { return font_family_; }
+	bool set_editor_font(std::wstring_view family, float size_dip, HWND hwnd);
 	[[nodiscard]] float char_width() const noexcept { return char_w_; }
 	[[nodiscard]] float padding() const noexcept { return padding_; }
 	[[nodiscard]] float line_height() const noexcept { return line_h_; }
@@ -264,7 +269,8 @@ public:
 			   const AskView* ask = nullptr, const MenuBarView* bar = nullptr,
 			   const std::vector<std::pair<std::size_t, std::size_t>>& marks = {},
 			   const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks = {},
-			   const OptionsView* options = nullptr, const DictView* dict = nullptr);
+			   const OptionsView* options = nullptr, const DictView* dict = nullptr,
+			   const std::pair<std::size_t, std::size_t>& word_highlight = {});
 
 	[[nodiscard]] float text_area_width() const noexcept;
 	[[nodiscard]] float text_area_height() const noexcept;
@@ -318,6 +324,7 @@ private:
 
 	float dpi_scale_ = 1.0F;
 	float font_size_ = 15.0F;
+	std::wstring font_family_; // пусто — Cascadia Mono/Consolas/Courier New
 	// Размер шрифта панели вопросов: берётся из стартового размера текста и
 	// дальше не меняется (Ctrl+± не должен двигать панель).
 	float ask_font_size_ = 15.0F;

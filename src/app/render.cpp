@@ -149,12 +149,22 @@ bool Renderer::measure_font(HWND hwnd)
 		fmt_right_->Release();
 		fmt_right_ = nullptr;
 	}
-	// Моноширинный шрифт: Cascadia Mono есть в Windows 11/10 (Terminal),
-	// Consolas — надёжный запасной вариант, дальше DirectWrite сам подберёт.
+	// Моноширинный шрифт: выбор пользователя (диалог «Шрифт», как TFontDialog
+	// оригинала) важнее встроенного набора; иначе Cascadia Mono (Windows 11/10),
+	// Consolas и Courier New — DirectWrite подберёт ближайший доступный.
 	const wchar_t* families[] = { L"Cascadia Mono", L"Consolas", L"Courier New" };
 	const float size = font_size_;
+	if (!font_family_.empty())
+	{
+		if (FAILED(dwrite_->CreateTextFormat(font_family_.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+											 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size,
+											 L"ru-ru", &fmt_)))
+			fmt_ = nullptr;
+	}
 	for (const wchar_t* family : families)
 	{
+		if (fmt_ != nullptr)
+			break;
 		if (SUCCEEDED(dwrite_->CreateTextFormat(family, nullptr, DWRITE_FONT_WEIGHT_NORMAL,
 												DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size,
 												L"ru-ru", &fmt_)))
@@ -254,6 +264,12 @@ bool Renderer::measure_font(HWND hwnd)
 
 bool Renderer::set_font_size(float size_dip, HWND hwnd)
 {
+	return set_editor_font(font_family_, size_dip, hwnd);
+}
+
+bool Renderer::set_editor_font(std::wstring_view family, float size_dip, HWND hwnd)
+{
+	font_family_.assign(family);
 	font_size_ = std::clamp(size_dip, 8.0F, 48.0F);
 	if (dwrite_ == nullptr)
 		return false;
@@ -534,7 +550,8 @@ void Renderer::draw_options(const OptionsView& view)
 			}
 			x += box + 8.0F;
 		}
-		brush_->SetColor(row.path ? theme_.accent : theme_.text);
+		// Недоступная строка (правила OptionsPage.cbClick) — приглушённая.
+		brush_->SetColor(row.enabled ? (row.path ? theme_.accent : theme_.text) : theme_.status_fg);
 		const float value_w = row.value.empty() ? 0.0F : measure_ui(row.value) + 10.0F;
 		rt_->DrawTextW(row.label.c_str(), static_cast<UINT32>(row.label.size()), fmt_ui_,
 					   D2D1::RectF(x, row.rect.top, std::max(x + 10.0F, row.rect.right - value_w),
@@ -542,7 +559,7 @@ void Renderer::draw_options(const OptionsView& view)
 					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 		if (!row.value.empty())
 		{
-			brush_->SetColor(row.path ? theme_.status_fg : theme_.text);
+			brush_->SetColor(row.enabled ? (row.path ? theme_.status_fg : theme_.text) : theme_.status_fg);
 			rt_->DrawTextW(row.value.c_str(), static_cast<UINT32>(row.value.size()), fmt_ui_,
 						   D2D1::RectF(row.rect.right - value_w, row.rect.top, row.rect.right,
 									   row.rect.bottom),
@@ -599,7 +616,11 @@ void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, f
 	if (rt_ == nullptr || brush_ == nullptr || from >= to)
 		return;
 	const float lh = std::max(1.0F, ed.metrics().line_height);
-	brush_->SetColor(D2D1::ColorF(0.72F, 0.16F, 0.16F, 0.85F)); // как «красное» слово оригинала
+	// Полупрозрачная заливка и рамка: буквы остаются читаемыми, а слово
+	// видно и поверх затемнения панели вопросов (раньше заливка была почти
+	// непрозрачной и «съедала» само слово).
+	const D2D1_COLOR_F fill = D2D1::ColorF(0.72F, 0.16F, 0.16F, 0.38F);
+	const D2D1_COLOR_F frame = D2D1::ColorF(0.95F, 0.38F, 0.30F, 0.95F);
 	for (const Editor::Row& row : ed.visible_rows())
 	{
 		const std::size_t line_start = ed.buffer().line_start(row.line);
@@ -617,7 +638,11 @@ void Renderer::draw_word_highlight(Editor& ed, float scroll_x, float scroll_y, f
 		const float y = bar_h_ + row.top - scroll_y;
 		if (y + lh < bar_h_ || y > bar_h_ + text_h)
 			continue;
-		rt_->FillRectangle(D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F), brush_);
+		const D2D1_RECT_F rect = D2D1::RectF(x1, y + 1.0F, std::max(x2, x1 + 1.0F), y + lh - 1.0F);
+		brush_->SetColor(fill);
+		rt_->FillRectangle(rect, brush_);
+		brush_->SetColor(frame);
+		rt_->DrawRectangle(rect, brush_, 1.5F);
 	}
 }
 
@@ -918,7 +943,8 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 					 const AskView* ask, const MenuBarView* bar,
 					 const std::vector<std::pair<std::size_t, std::size_t>>& marks,
 					 const std::vector<std::pair<std::size_t, std::size_t>>& yofy_marks,
-					 const OptionsView* options, const DictView* dict)
+					 const OptionsView* options, const DictView* dict,
+				 const std::pair<std::size_t, std::size_t>& word_highlight)
 {
 	if (rt_ == nullptr && !create_render_target(hwnd_))
 		return;
@@ -1149,9 +1175,11 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		rt_->FillRectangle(D2D1::RectF(0.0F, text_y0, width_dip_, text_y0 + text_h), dim_brush_);
 
 	// Слово, про которое спрашивает ёфикация, подсвечиваем в тексте — как в
-	// AskPanel оригинала: видно, к чему относится вопрос.
-	if (ask != nullptr && ask->has_word)
-		draw_word_highlight(ed, scroll_x, scroll_y, text_h, ask->word_from, ask->word_to);
+	// AskPanel оригинала: видно, к чему относится вопрос. Подсветка живёт и
+	// между вопросами (весь проход), поэтому не мигает.
+	if (word_highlight.second > word_highlight.first)
+		draw_word_highlight(ed, scroll_x, scroll_y, text_h, word_highlight.first,
+							word_highlight.second);
 
 	if (find != nullptr)
 		draw_find_bar(*find);

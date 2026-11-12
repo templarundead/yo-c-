@@ -221,6 +221,11 @@ private:
 	void options_activate(int row);
 	void options_font_step(int delta);
 	void options_lines_below_step(int delta);
+	// «Шрифт» (TFontDialog оригинала): только моноширинные — раскладка
+	// редактора считает ширину одного символа.
+	bool pick_editor_font();
+	// «Цвет»/«Фон» пометки замен (ColorDialog оригинала).
+	bool pick_mark_color(bool background);
 	void options_move(int delta);
 	[[nodiscard]] bool options_click(float x, float y);
 	[[nodiscard]] bool options_mouse_move(float x, float y);
@@ -316,6 +321,8 @@ private:
 	bool readonly_ = false;
 
 	float font_size_ = 15.0F;
+	std::wstring font_name_; // [Yo] FontName (пусто — встроенный набор)
+	int font_charset_ = 1;	 // [Yo] FontCharset (для диалога шрифта)
 	float dpi_scale_ = 1.0F;
 	bool caret_on_ = true;
 	bool dragging_ = false;
@@ -374,8 +381,9 @@ private:
 	bool auto_unicode_ = true;	   // AutoUnicode
 	bool to_confirm_close_ = false; // ToConfirmClose («Не подтверждать закрытие»)
 	bool show_toolbar_ = false;	   // [ToolBar] ShowToolBar
-	int mark_color_ = 0;		   // [Colors] ColorMark   (индекс палитры)
-	int back_mark_color_ = 1;	   // [Colors] ColorBackMark
+	// [Colors] ColorMark / ColorBackMark — COLORREF, как TColor оригинала.
+	std::uint32_t mark_color_ = yo::kColorBlue;
+	std::uint32_t back_mark_color_ = yo::kColorYellow;
 	std::wstring dict_setting_;	 // [Yo] Dictionary (пусто — искать рядом с exe)
 	std::wstring regex_setting_; // [Yo] RegExprDictionary
 	MruList mru_;

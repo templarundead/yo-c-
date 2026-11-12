@@ -402,12 +402,22 @@ void App::load_settings()
 	lines_below_ = static_cast<int>(std::clamp<long long>(ini.get_int(kYo, "LinesBelow", lines_below_), 0, 40));
 	// Наше дополнение (в оригинале такой опции нет).
 	silent_yofy_ = ini.get_bool(kYo, "SilentYofy", silent_yofy_);
-	// Палитра окна настроек: цвета замен лежат в [Colors] индексами.
-	mark_color_ = static_cast<int>(std::clamp<long long>(
-		ini.get_int("Colors", "ColorMark", mark_color_), 0, static_cast<long long>(yo::options_colors().size()) - 1));
-	back_mark_color_ = static_cast<int>(std::clamp<long long>(
-		ini.get_int("Colors", "ColorBackMark", back_mark_color_), 0,
-		static_cast<long long>(yo::options_colors().size()) - 1));
+	// [Colors] — COLORREF, как в оригинале; индексы старых сборок yo-c-
+	// тоже понимаются (options_color_from_ini).
+	mark_color_ = yo::options_color_from_ini(
+		ini.get_int("Colors", "ColorMark", static_cast<long long>(mark_color_)));
+	back_mark_color_ = yo::options_color_from_ini(
+		ini.get_int("Colors", "ColorBackMark", static_cast<long long>(back_mark_color_)));
+	// Шрифт редактора: имя и charset, как FontName/FontCharset оригинала.
+	{
+		const std::wstring name = widen(ini.get(kYo, "FontName"));
+		if (!name.empty())
+			font_name_ = name;
+		font_charset_ = static_cast<int>(std::clamp<long long>(ini.get_int(kYo, "FontCharset", font_charset_), 0, 255));
+	}
+	// Взаимоисключение VarOnly/AlwaysAsk: в старом файле могли остаться оба.
+	if (always_ask_)
+		var_only_ = false;
 	// [Internal] — ключи оригинала; у нас не используются, но должны
 	// переживать перезапись файла (см. save_settings).
 	show_toolbar_ = ini.get_bool("ToolBar", "ShowToolBar", show_toolbar_);
@@ -484,8 +494,8 @@ void App::save_settings()
 	ini.set_bool(kYo, "ToConfirmCap", to_confirm_cap_);
 	ini.set_int(kYo, "LinesBelow", lines_below_);
 	ini.set_bool(kYo, "SilentYofy", silent_yofy_);
-	ini.set_int("Colors", "ColorMark", mark_color_);
-	ini.set_int("Colors", "ColorBackMark", back_mark_color_);
+	ini.set_int("Colors", "ColorMark", static_cast<long long>(mark_color_));
+	ini.set_int("Colors", "ColorBackMark", static_cast<long long>(back_mark_color_));
 	ini.set_bool("ToolBar", "ShowToolBar", show_toolbar_);
 	ini.set("Yo", "ButtonHotKeys", "1234"); // порядок кнопок AskPanel, как в оригинале
 	ini.set_int("Yo", "WordsBufferLength", 5);
@@ -494,7 +504,9 @@ void App::save_settings()
 		ini.set_bool("Internal", "UTF8Warning", true);
 	if (!ini.has("Internal", "UTFLength"))
 		ini.set_int("Internal", "UTFLength", 512);
-	ini.set("Yo", "FontName", "Courier New");
+	if (!font_name_.empty())
+		ini.set(kYo, "FontName", narrow(font_name_));
+	ini.set_int(kYo, "FontCharset", font_charset_);
 	ini.set_float(kYo, "FontSize", font_size_);
 	if (!dict_setting_.empty())
 		ini.set(kYo, "Dictionary", narrow(dict_setting_));
@@ -644,6 +656,9 @@ void App::on_create()
 	if (!renderer_.init(hwnd_, font_size_))
 		MessageBoxW(hwnd_, L"Не удалось инициализировать Direct2D/DirectWrite.", L"Ё", MB_ICONERROR);
 	renderer_.set_dpi(dpi_scale_);
+	// Шрифт из yo.ini (FontName/FontSize) — до первой раскладки.
+	if (!font_name_.empty())
+		renderer_.set_editor_font(font_name_, font_size_, hwnd_);
 	apply_mark_colors(); // [Colors] ColorMark / ColorBackMark
 	sync_metrics();
 	apply_word_wrap(); // [Yo] WordWrap (в оригинале по умолчанию включён)
@@ -1396,9 +1411,15 @@ void App::on_paint()
 	const auto paint_started = std::chrono::steady_clock::now();
 	options_sync_view();
 	dict_sync_view();
+	// Подсветка слова под вопросом живёт весь проход (между вопросами тоже),
+	// поэтому она не мигает и не «пропадает» на глазах.
+	const std::pair<std::size_t, std::size_t> word_hl =
+		ask_.has_word ? std::pair<std::size_t, std::size_t>{ ask_.word_from, ask_.word_to }
+					  : std::pair<std::size_t, std::size_t>{ 0, 0 };
 	renderer_.paint(*ed_, status_text(), show_find_ ? &find_view_ : nullptr, caret_on_,
 					ask_.active && ask_.has_panel ? &view : nullptr, &bar_view, find_marks_, yofy_marks_,
-					options_open_ ? &options_view_ : nullptr, dict_open_ ? &dict_view_ : nullptr);
+					options_open_ ? &options_view_ : nullptr, dict_open_ ? &dict_view_ : nullptr,
+					word_hl);
 	const double paint_ms =
 		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paint_started).count();
 	if (paint_ms > 16.0)
@@ -2852,17 +2873,10 @@ bool App::options_key(WPARAM vk, bool ctrl, bool shift)
 			options_lines_below_step(step);
 		else if (what == OptionChoice::font_size)
 			options_font_step(step);
-		else if (what == OptionChoice::mark_color)
+		else if (what == OptionChoice::mark_color || what == OptionChoice::back_mark_color)
 		{
-			options_state_.mark_color = yo::options_next_color(options_state_.mark_color);
-			options_sync_view();
-			invalidate();
-		}
-		else if (what == OptionChoice::back_mark_color)
-		{
-			options_state_.back_mark_color = yo::options_next_color(options_state_.back_mark_color);
-			options_sync_view();
-			invalidate();
+			// Стрелка по строке цвета — ColorDialog, как кнопка оригинала.
+			pick_mark_color(what == OptionChoice::back_mark_color);
 		}
 		else if (what == OptionChoice::tab_yofy || what == OptionChoice::tab_editor ||
 				 what == OptionChoice::tab_dicts)
@@ -2936,12 +2950,15 @@ void App::options_open_dialog()
 	options_state_.fast_scroll = fast_scroll_;
 	options_state_.mark_color = mark_color_;
 	options_state_.back_mark_color = back_mark_color_;
+	// Правила блокировок — по текущему состоянию (OptionsPage.cbClick).
+	yo::options_normalize(options_state_);
 	options_state_.word_wrap = word_wrap_;
 	options_state_.recall_last_file = recall_last_file_;
 	options_state_.auto_unicode = auto_unicode_;
 	options_state_.show_toolbar = show_toolbar_;
 	options_state_.to_confirm_close = to_confirm_close_;
 	options_state_.font_size = font_size_;
+	options_state_.font_name = narrow(font_name_);
 	options_state_.dictionary = dictionary_display(false);
 	options_state_.regex_dictionary = dictionary_display(true);
 	options_open_ = true;
@@ -3022,9 +3039,15 @@ void App::options_apply(bool remember)
 			yofy_.reset(); // опции читаются при создании движка
 	}
 
-	if (std::abs(options_state_.font_size - font_size_) > 0.01F &&
-		renderer_.set_font_size(options_state_.font_size, hwnd_))
+	// Шрифт применяется сразу, как в оригинале (Editor.Font := …).
+	font_name_.assign(widen(options_state_.font_name));
+	if ((std::abs(options_state_.font_size - font_size_) > 0.01F ||
+		 font_name_ != renderer_.font_family()) &&
+		renderer_.set_editor_font(font_name_, options_state_.font_size, hwnd_))
+	{
 		font_size_ = renderer_.font_size();
+		sync_metrics();
+	}
 
 	apply_mark_colors(); // цвета пометки видны сразу, без перезапуска
 
@@ -3095,7 +3118,23 @@ void App::options_activate(int row)
 {
 	if (row < 0 || static_cast<std::size_t>(row) >= options_layout_.rows.size())
 		return;
-	const OptionChoice what = options_layout_.rows[static_cast<std::size_t>(row)].what;
+	const OptionRowBox& box = options_layout_.rows[static_cast<std::size_t>(row)];
+	const OptionChoice what = box.what;
+	// Недоступная строка (правила блокировок, как OptionsPage.cbClick)
+	// не реагирует на мышь и Enter.
+	if (!yo::option_enabled(options_state_, what))
+		return;
+
+	// Галочки переключает ядро: оно же снимает взаимоисключающие пункты
+	// («Только интерактивные замены» ↔ «Всегда подтверждать замену»).
+	if (box.check)
+	{
+		yo::options_toggle(options_state_, what);
+		options_sync_view();
+		invalidate();
+		return;
+	}
+
 	switch (what)
 	{
 	// Вкладки
@@ -3111,80 +3150,23 @@ void App::options_activate(int row)
 		options_state_.tab = 2;
 		options_row_ = 0;
 		break;
-	// «Ёфикация»
-	case OptionChoice::check_yo:
-		options_state_.check_yo = !options_state_.check_yo;
-		break;
-	case OptionChoice::no_var_only:
-		options_state_.no_var_only = !options_state_.no_var_only;
-		break;
-	case OptionChoice::var_only:
-		options_state_.var_only = !options_state_.var_only;
-		break;
-	case OptionChoice::always_ask:
-		options_state_.always_ask = !options_state_.always_ask;
-		break;
-	case OptionChoice::to_confirm_abbr:
-		options_state_.to_confirm_abbr = !options_state_.to_confirm_abbr;
-		break;
-	case OptionChoice::to_confirm_cap:
-		options_state_.to_confirm_cap = !options_state_.to_confirm_cap;
-		break;
-	case OptionChoice::to_confirm_ellipsis:
-		options_state_.to_confirm_ellipsis = !options_state_.to_confirm_ellipsis;
-		break;
-	case OptionChoice::propose_last:
-		options_state_.propose_last = !options_state_.propose_last;
-		break;
-	case OptionChoice::regexs:
-		options_state_.regexs = !options_state_.regexs;
-		break;
-	case OptionChoice::fb_format:
-		options_state_.fb_format = !options_state_.fb_format;
-		break;
 	case OptionChoice::lines_below: // Enter по строке числа — «+»
 		options_lines_below_step(1);
 		return;
-	case OptionChoice::fast_scroll:
-		options_state_.fast_scroll = !options_state_.fast_scroll;
-		break;
-	// «Редактор»
-	case OptionChoice::mark:
-		options_state_.mark = !options_state_.mark;
+	case OptionChoice::font_size: // Enter по строке «Шрифт» — диалог шрифта
+		pick_editor_font();
 		break;
 	case OptionChoice::mark_color:
-		options_state_.mark_color = yo::options_next_color(options_state_.mark_color);
+		pick_mark_color(false);
 		break;
 	case OptionChoice::back_mark_color:
-		options_state_.back_mark_color = yo::options_next_color(options_state_.back_mark_color);
+		pick_mark_color(true);
 		break;
-	case OptionChoice::word_wrap:
-		options_state_.word_wrap = !options_state_.word_wrap;
-		break;
-	case OptionChoice::recall_last_file:
-		options_state_.recall_last_file = !options_state_.recall_last_file;
-		break;
-	case OptionChoice::font_size: // Enter по строке «Шрифт» — крупнее
-		options_font_step(1);
-		return;
-	case OptionChoice::auto_unicode:
-		options_state_.auto_unicode = !options_state_.auto_unicode;
-		break;
-	case OptionChoice::show_toolbar:
-		options_state_.show_toolbar = !options_state_.show_toolbar;
-		break;
-	case OptionChoice::to_confirm_close:
-		options_state_.to_confirm_close = !options_state_.to_confirm_close;
-		break;
-	// «Словари» — наши пункты
 	case OptionChoice::dictionary:
 		pick_dictionary(false);
 		break;
 	case OptionChoice::regex_dictionary:
 		pick_dictionary(true);
-		break;
-	case OptionChoice::silent_yofy:
-		options_state_.silent_yofy = !options_state_.silent_yofy;
 		break;
 	default:
 		break;
@@ -4107,9 +4089,84 @@ void App::apply_mark_colors()
 		const float b = static_cast<float>((rgb >> 16U) & 0xFFU) / 255.0F;
 		return D2D1::ColorF(r, g, b, alpha);
 	};
-	const yo::OptionsColor& text = yo::options_color_at(mark_color_);
-	const yo::OptionsColor& back = yo::options_color_at(back_mark_color_);
-	renderer_.set_yofy_colors(to_color(text.rgb, 1.0F), to_color(back.rgb, 0.35F));
+	renderer_.set_yofy_colors(to_color(mark_color_, 1.0F), to_color(back_mark_color_, 0.35F));
+}
+
+bool App::pick_editor_font()
+{
+	// TFontDialog оригинала. Только моноширинные шрифты (CF_FIXEDPITCHONLY):
+	// редактор считает ширину одного символа, и «пропорциональный» шрифт
+	// развалил бы раскладку строк.
+	LOGFONTW lf{};
+	lf.lfHeight = -static_cast<LONG>(std::lround(font_size_ * std::max(1.0F, dpi_scale_)));
+	lf.lfWeight = FW_NORMAL;
+	lf.lfCharSet = static_cast<BYTE>(std::clamp(font_charset_, 0, 255));
+	lf.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
+	if (!font_name_.empty())
+		lstrcpynW(lf.lfFaceName, font_name_.c_str(), LF_FACESIZE);
+
+	CHOOSEFONTW cf{};
+	cf.lStructSize = sizeof(cf);
+	cf.hwndOwner = hwnd_;
+	cf.lpLogFont = &lf;
+	cf.Flags = CF_SCREENFONTS | CF_FIXEDPITCHONLY | CF_INITTOLOGFONTSTRUCT | CF_NOVERTFONTS |
+			   CF_LIMITSIZE | CF_NOSTYLESEL;
+	cf.nSizeMin = 6;  // пункты
+	cf.nSizeMax = 36;
+	if (ChooseFontW(&cf) == FALSE)
+		return false;
+
+	const float scale = std::max(1.0F, dpi_scale_);
+	// Кегль: PointSize (в десятых пункта) точнее, чем lfHeight, который
+	// округлён до пикселей экрана. Пункт = 1/72", DIP = 1/96" → ×96/72.
+	float size = font_size_;
+	if (cf.iPointSize > 0)
+		size = static_cast<float>(cf.iPointSize) / 10.0F * (96.0F / 72.0F);
+	else if (lf.lfHeight != 0)
+		size = static_cast<float>(std::abs(lf.lfHeight)) / scale;
+	size = std::clamp(size, 8.0F, 48.0F);
+	font_name_ = lf.lfFaceName;
+	font_charset_ = lf.lfCharSet;
+	options_state_.font_size = size;
+	options_state_.font_name = narrow(font_name_);
+	// Применяем сразу — в окне настроек видно результат, как SampleEditor.
+	if (renderer_.set_editor_font(font_name_, size, hwnd_))
+	{
+		font_size_ = renderer_.font_size();
+		sync_metrics();
+	}
+	options_sync_view();
+	invalidate();
+	return true;
+}
+
+bool App::pick_mark_color(bool background)
+{
+	// ColorDialog оригинала. Значение — COLORREF, как TColor в ini.
+	static COLORREF custom[16] = {};
+	CHOOSECOLORW cc{};
+	cc.lStructSize = sizeof(cc);
+	cc.hwndOwner = hwnd_;
+	cc.rgbResult = background ? back_mark_color_ : mark_color_;
+	cc.lpCustColors = custom;
+	cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
+	if (ChooseColorW(&cc) == FALSE)
+		return false;
+
+	if (background)
+	{
+		back_mark_color_ = cc.rgbResult;
+		options_state_.back_mark_color = cc.rgbResult;
+	}
+	else
+	{
+		mark_color_ = cc.rgbResult;
+		options_state_.mark_color = cc.rgbResult;
+	}
+	apply_mark_colors();
+	options_sync_view();
+	invalidate();
+	return true;
 }
 
 void App::show_about()
@@ -4432,6 +4489,8 @@ void App::run_yofification(bool from_start)
 
 	if (ask_count_ > 0)
 		save_user_selections(); // ответы «Всегда Е/Ё» переживут перезапуск
+	// Проход закончился — подсветка последнего слова больше не нужна.
+	ask_.has_word = false;
 
 	if (last_yofy_.changed)
 	{
@@ -4542,6 +4601,7 @@ void App::ask_build_view()
 
 	// Слово, о котором спрашивают: смещения в AskRequest — в кодовых точках
 	// внутри строки (UString), а подсветке нужны байты всего текста.
+	// Пересчёт — в ядре (yo::ask_word_bytes), он же покрыт тестами.
 	const std::size_t ask_line = ask_.req.line;
 	ask_.has_word = false;
 	ask_.word_from = 0;
@@ -4550,20 +4610,14 @@ void App::ask_build_view()
 	if (ask_line < buf_->line_count())
 	{
 		const std::string_view text = buf_->line_text(ask_.req.line);
-		const UString u32 = decode_line(
-			{ reinterpret_cast<const std::uint8_t*>(text.data()), text.size() }, Encoding::utf8);
-		const std::size_t from32 = std::min(ask_.req.offset, u32.size());
-		const std::size_t to32 = std::min(ask_.req.offset + ask_.req.length, u32.size());
-		const std::size_t byte_from =
-			encode_line(UString(u32.substr(0, from32)), Encoding::utf8).size();
-		const std::string word8 = encode_line(UString(u32.substr(from32, to32 - from32)), Encoding::utf8);
-		const std::size_t byte_to = byte_from + word8.size();
-		if (byte_to > byte_from)
+		const AskWordRange range = ask_word_bytes(text, ask_.req.offset, ask_.req.length);
+		if (range.valid())
 		{
+			const std::size_t line_start = buf_->line_start(ask_.req.line);
 			ask_.has_word = true;
-			ask_.word_from = buf_->line_start(ask_.req.line) + byte_from;
-			ask_.word_to = buf_->line_start(ask_.req.line) + byte_to;
-			ask_.word_text = widen(word8);
+			ask_.word_from = line_start + range.from;
+			ask_.word_to = line_start + range.to;
+			ask_.word_text = widen(std::string(text.substr(range.from, range.to - range.from)));
 		}
 	}
 

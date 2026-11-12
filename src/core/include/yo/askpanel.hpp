@@ -25,6 +25,20 @@ struct AskTexts
 
 [[nodiscard]] AskTexts make_ask_texts(const AskRequest& req);
 
+// Байтовый диапазон слова, о котором спрашивают, внутри строки UTF-8.
+// offset/length в AskRequest считаются в кодовых точках (UString), а
+// подсветке в документе нужны байты — раньше это пересчитывалось в GUI, и
+// ошибка в пересчёте выглядела как «подсветка уехала/пропала».
+struct AskWordRange
+{
+	std::size_t from = 0; // смещение от начала строки, байты
+	std::size_t to = 0;
+	[[nodiscard]] bool valid() const noexcept { return to > from; }
+};
+
+[[nodiscard]] AskWordRange ask_word_bytes(std::string_view line_utf8, std::size_t offset_cp,
+										  std::size_t length_cp);
+
 // Что можно ответить (совпадает с AskAnswer, но без служебных значений).
 enum class AskChoice : std::uint8_t
 {

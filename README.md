@@ -88,7 +88,13 @@
   `NoVarOnly`, `VarOnly`, `AlwaysAsk`, `ToConfirmAbbr`, `ToConfirmCap`,
   `ToConfirmEllipsis`, `ProposeLast`, `RegExprs`, `FBFormat`, `FastScroll`)
   и «Редактор» (`Mark`, `WordWrap`, `RecallLastFile`, шрифт, `Цвет`/`Фон`
-  пометки, `AutoUnicode`, `ShowToolBar`, `ToConfirmClose`); кнопки
+  пометки, `AutoUnicode`, `ShowToolBar`, `ToConfirmClose`); шрифт
+  выбирается системным диалогом (`ChooseFont`, только моноширинные),
+  цвета — `ColorDialog` с любым цветом (`COLORREF` в `[Colors]`);
+  взаимоисключающие пункты («Только интерактивные замены» ↔ «Всегда
+  подтверждать замену», «Только бесспорные») снимают друг друга, а
+  недоступные строки (три «подтверждать …» при `AlwaysAsk`, цвета без
+  «Помечать исправленное») гаснут, как в `OptionsPage.cbClick`; кнопки
   «Применить», «Отменить», «Применить и запомнить» (bOK / bCancel / bOKSave).
   Третья вкладка «Словари» — наше дополнение: пути `Dictionary` /
   `RegExprDictionary` и «Ёфицировать без вопросов».
@@ -99,7 +105,8 @@
   `CheckYo`, `NoVarOnly`, `VarOnly`, `WordWrap`, `ProposeLast`, `FBFormat`,
   `AutoUnicode`, `RegExprs`, `RecallLastFile`, `ToConfirmClose`,
   `ToConfirmAbbr`, `ToConfirmEllipsis`, `ToConfirmCap`, `LinesBelow`,
-  `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`,
+  `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`
+  (шрифт применяется),
   `ButtonHotKeys`, `WordsBufferLength`, геометрия окна; `[Colors]`
   `ColorMark`, `ColorBackMark`; `[Internal]` `UTF8Warning`, `UTFLength`;
   `[ToolBar] ShowToolBar`; `[Files] Name1..9`, `LastFileN`.

@@ -67,6 +67,33 @@ enum class OptionChoice : std::uint8_t
 	apply_remember, // «Применить и запомнить»
 };
 
+// Цвет: значение в формате COLORREF (0x00BBGGRR), как TColor в оригинале.
+inline constexpr std::uint32_t kColorBlack = 0x00000000U;
+inline constexpr std::uint32_t kColorRed = 0x000000FFU;
+inline constexpr std::uint32_t kColorGreen = 0x00008000U;
+inline constexpr std::uint32_t kColorBlue = 0x00FF0000U;
+inline constexpr std::uint32_t kColorYellow = 0x0000FFFFU;
+inline constexpr std::uint32_t kColorAqua = 0x00FFFF00U;
+inline constexpr std::uint32_t kColorGray = 0x00808080U;
+inline constexpr std::uint32_t kColorWhite = 0x00FFFFFFU;
+
+// Стандартные цвета (пункт меню ColorDialog и подписи): имя + значение.
+struct OptionsColor
+{
+	std::uint32_t rgb = 0; // 0x00BBGGRR, как COLORREF в Win32
+	std::string name;
+};
+
+// Палитра окна настроек: имена для строк «Цвет»/«Фон» и быстрый выбор.
+[[nodiscard]] std::span<const OptionsColor> options_colors();
+[[nodiscard]] const OptionsColor& options_color_at(int index);
+// Подпись цвета: имя из палитры («синий») или «#RRGGBB» для любого другого
+// цвета, выбранного в ColorDialog.
+[[nodiscard]] std::string options_color_text(std::uint32_t rgb);
+// Значение из ini: COLORREF, а для совместимости — индекс палитры 0..5,
+// который писали предыдущие сборки yo-c-.
+[[nodiscard]] std::uint32_t options_color_from_ini(long long value);
+
 // Текущие значения — то, что показывается в окне.
 struct OptionsState
 {
@@ -87,11 +114,14 @@ struct OptionsState
 	bool fast_scroll = false;	   // FastScroll
 
 	bool mark = true;		   // Mark
-	int mark_color = 0;		   // [Colors] ColorMark (индекс палитры)
-	int back_mark_color = 1;   // [Colors] ColorBackMark
+	// [Colors] ColorMark / ColorBackMark — COLORREF (0x00BBGGRR), как в
+	// оригинале; по умолчанию clBlue и clYellow.
+	std::uint32_t mark_color = kColorBlue;
+	std::uint32_t back_mark_color = kColorYellow;
 	bool word_wrap = true;	   // WordWrap
 	bool recall_last_file = true; // RecallLastFile
 	float font_size = 15.0F;   // FontSize
+	std::string font_name;	   // FontName (пусто — встроенный набор)
 	bool auto_unicode = true;  // AutoUnicode
 	bool show_toolbar = false; // [ToolBar] ShowToolBar
 	bool to_confirm_close = false; // ToConfirmClose
@@ -102,19 +132,6 @@ struct OptionsState
 	std::string regex_dictionary;
 };
 
-// Цвет из палитры окна настроек: имя для строки и значение для темы.
-struct OptionsColor
-{
-	std::uint32_t rgb = 0; // 0x00BBGGRR, как COLORREF в Win32
-	std::string name;
-};
-
-// Палитра для «Цвет»/«Фон» помеченных замен (оригинал брал любой цвет из
-// ColorDialog; у нас — фиксированный набор, чтобы раскладка была тестируемой).
-[[nodiscard]] std::span<const OptionsColor> options_colors();
-[[nodiscard]] int options_next_color(int current);
-[[nodiscard]] const OptionsColor& options_color_at(int index);
-
 struct OptionRowBox
 {
 	OptionChoice what = OptionChoice::always_ask;
@@ -122,6 +139,7 @@ struct OptionRowBox
 	std::string value; // «2» для чисел, имя цвета, путь для словарей
 	bool check = false;	 // строка-галочка
 	bool checked = false;
+	bool enabled = true; // доступность (правила блокировок, кнопки цветов)
 	bool path = false;	 // строка выбора файла
 	bool tab = false;	 // заголовок вкладки
 	bool tab_active = false;
@@ -159,6 +177,21 @@ struct OptionsLayout
 
 // Размер шрифта в окне: целое число (как FontSize в ini).
 [[nodiscard]] std::string options_font_text(float size);
+// Подпись строки «Шрифт»: «Cascadia Mono, 11» или просто «15», если имя
+// не выбрано (встроенный моноширинный набор).
+[[nodiscard]] std::string options_font_label(const OptionsState& state);
+
+// Правила взаимных блокировок окна «Опции»: повторяют OptionsPage.cbClick
+// (AlwaysAsk выключает три ToConfirm*, VarOnly/NoVarOnly несовместимы,
+// кнопки цветов доступны только при Mark) и добавляют взаимное исключение
+// VarOnly ↔ AlwaysAsk: «только интерактивные замены» и «всегда спрашивать»
+// одновременно смысла не имеют.
+[[nodiscard]] bool option_enabled(const OptionsState& state, OptionChoice what);
+// Переключение галочки с учётом правил (включает одно — снимает другое).
+void options_toggle(OptionsState& state, OptionChoice what);
+// Приведение загруженных из ini значений к согласованному виду
+// (если в файле остались оба флага — побеждает AlwaysAsk).
+void options_normalize(OptionsState& state);
 
 // Раскладка окна по центру клиентской области. `line_h` — высота строки
 // интерфейсного шрифта (DIP): размеры окна не зависят от масштаба текста.
