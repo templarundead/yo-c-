@@ -101,7 +101,7 @@ struct OptionsState
 
 	// [Yo] — ключи названы как в оригинале (Main.pas §ReadOptions)
 	bool check_yo = true;		   // CheckYo
-	bool no_var_only = false;	   // NoVarOnly
+	bool no_var_only = true;	   // NoVarOnly (в GUI включено по умолчанию)
 	bool var_only = false;		   // VarOnly
 	bool always_ask = false;	   // AlwaysAsk
 	bool to_confirm_abbr = true;   // ToConfirmAbbr

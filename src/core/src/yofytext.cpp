@@ -8,6 +8,22 @@
 
 namespace yo {
 
+namespace {
+// Сколько байт UTF-8 занимают первые `codepoints` символов строки.
+std::size_t utf8_prefix_bytes(std::string_view line, std::size_t codepoints)
+{
+	std::size_t bytes = 0;
+	std::size_t count = 0;
+	while (bytes < line.size() && count < codepoints)
+	{
+		const std::size_t len = utf8_char_len(line[bytes]);
+		bytes += len == 0 ? 1 : len;
+		++count;
+	}
+	return std::min(bytes, line.size());
+}
+} // namespace
+
 const UString* BufferLineSource::line(std::size_t index) const
 {
 	if (index >= buf_.line_count())
@@ -141,14 +157,32 @@ YofyResult yofify_range(TextBuffer& buf, std::size_t from, std::size_t to, Yofic
 	// Замена: строки с их собственными EOL между ними; EOL последней
 	// строки остаётся в документе (он вне диапазона).
 	std::string replacement;
+	// Смещение каждой строки внутри replacement — нужно, чтобы перевести
+	// замены (кодпоинты в строке) в абсолютные байтовые диапазоны.
+	std::vector<std::size_t> line_offsets(new_lines.size() + 1, 0);
 	for (std::size_t k = 0; k < new_lines.size(); ++k)
 	{
+		line_offsets[k] = replacement.size();
 		replacement += new_lines[k];
 		if (k + 1 < new_lines.size())
 			replacement += eol_bytes(buf.line_eol(first + k));
 	}
+	line_offsets[new_lines.size()] = replacement.size();
 
 	const std::size_t from_off = buf.line_start(first);
+	// Пометки — по фактически заменённым символам («Откат» уже убрал свои из
+	// edits). Длина замены е↔ё в UTF-8 одинакова, поэтому смещения строк не
+	// съезжают и диапазоны остаются верными после вставки replacement.
+	for (const Edit& e : edits)
+	{
+		const std::size_t k = e.line - first;
+		if (k >= new_lines.size())
+			continue;
+		const std::string ch = encode_line(UString(1, e.new_ch), Encoding::utf8);
+		const std::size_t byte = from_off + line_offsets[k] +
+								 utf8_prefix_bytes(new_lines[k], e.offset);
+		result.marks.emplace_back(byte, byte + std::max<std::size_t>(1, ch.size()));
+	}
 	const std::size_t to_off = buf.line_end(first + new_lines.size() - 1);
 	buf.begin_group("Ёфикация");
 	buf.erase(from_off, to_off - from_off);
@@ -182,6 +216,7 @@ YofyResult yofify_document(TextBuffer& buf, std::size_t from, std::size_t to, Yo
 		total.lines += part.lines;
 		total.asked += part.asked;
 		total.reverted += part.reverted;
+		total.marks.insert(total.marks.end(), part.marks.begin(), part.marks.end());
 		total.changed = total.changed || part.changed;
 		total.rolled_back = total.rolled_back || part.rolled_back;
 		if (part.cancelled)

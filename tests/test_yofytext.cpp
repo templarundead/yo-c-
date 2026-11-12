@@ -349,3 +349,68 @@ TEST_CASE("ёфикация документа кусками: диапазон 
 	CHECK(buf->text().rfind("все еще\n", 0) == 0);
 	CHECK(buf->text().find("всё ещё\n", 8) != std::string::npos);
 }
+
+TEST_CASE("пометки ёфикации: только заменённые символы, смещения точные", "[yofytext]")
+{
+	Engine e;
+	// «ещё» уже содержит ё — эта буква не заменялась и в пометки попасть не
+	// должна. Остальные «е» движок меняет (вопросы решены «Всегда Ё»).
+	const std::string before = "Все ещё не пришел.\r\nОн все равно придет.\n";
+	auto buf = tb(before);
+	const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+	REQUIRE(r.changed);
+	REQUIRE(r.replaced > 0);
+	REQUIRE(r.marks.size() == r.replaced);
+
+	const std::string after = buf->text();
+	REQUIRE(after.size() == before.size()); // смещения сравнимы
+
+	std::size_t prev_end = 0;
+	for (const auto& [from, to] : r.marks)
+	{
+		INFO(from << ".." << to);
+		REQUIRE(to > from);
+		CHECK(to - from == 2); // ё/Ё в UTF-8 — два байта
+		CHECK(from >= prev_end); // отсортированы и не пересекаются
+		prev_end = to;
+		// В результате под пометкой стоит именно ё.
+		const std::string ch = after.substr(from, to - from);
+		CHECK((ch == "ё" || ch == "Ё"));
+		// А в исходном тексте на этом месте было «е»/«Е» — то есть пометка
+		// стоит ровно на заменённом символе, а не на соседнем.
+		const std::string was = before.substr(from, to - from);
+		CHECK((was == "е" || was == "Е"));
+	}
+
+	// Предсуществующая ё в «ещё» не помечена.
+	const std::size_t yo = before.find("ещё");
+	REQUIRE(yo != std::string::npos);
+	for (const auto& [from, to] : r.marks)
+		CHECK_FALSE((from <= yo + 2 && yo + 2 < to));
+}
+
+TEST_CASE("пометки ёфикации: откат снимает и замену, и пометку", "[yofytext]")
+{
+	Engine e;
+	auto buf = tb("все еще\n");
+	std::size_t first_mark = 0;
+	std::size_t answered = 0;
+	e.yofy.set_ask(
+		[&](const AskRequest&) {
+			// На второй вопрос — «Откат»: предыдущая замена снимается.
+			if (++answered == 2)
+				return AskAnswer::undo;
+			return AskAnswer::yo;
+		});
+	const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+	if (r.replaced > 0)
+		first_mark = r.marks.front().first;
+	(void)first_mark;
+	// Сколько замен осталось — столько и пометок; лишних нет.
+	CHECK(r.marks.size() == r.replaced);
+	for (const auto& [from, to] : r.marks)
+	{
+		const std::string ch = buf->text().substr(from, to - from);
+		CHECK((ch == "ё" || ch == "Ё"));
+	}
+}

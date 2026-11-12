@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <utility>
 #include <unordered_map>
 
 namespace yo {
@@ -38,6 +39,11 @@ struct YofyResult
 	bool cancelled = false;		// обработка прервана пользователем
 	bool rolled_back = false;	// (устарело) проход отменён целиком
 	bool changed = false;		// текст документа изменился
+	// Абсолютные байтовые диапазоны именно тех символов, которые заменены
+	// (е→ё и обратно), в документе после прохода. По ним GUI красит пометки:
+	// подсвечивать все «ё» диапазона нельзя — подсвечивались бы и те, что
+	// стояли в тексте изначально.
+	std::vector<std::pair<std::size_t, std::size_t>> marks;
 };
 
 // Строка, к которой перешёл проход (для подсветки/прокрутки в GUI).

@@ -576,7 +576,9 @@ bool App::create(HINSTANCE hinst, int cmd_show, const std::wstring& file)
 	wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
 	wc.lpfnWndProc = &App::wnd_proc;
 	wc.hInstance = hinst;
-	wc.hCursor = LoadCursorW(nullptr, IDC_IBEAM);
+	// Курсор окна — стрелка; каретку над текстом ставит update_cursor()
+	// (WM_SETCURSOR), чтобы над кнопками и галочками не было I-beam.
+	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
 	wc.hbrBackground = nullptr; // рисуем сами
 	wc.lpszClassName = L"YoCEditorWindow";
 	wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
@@ -1729,6 +1731,50 @@ void App::on_lbutton_down(float x, float y, bool extend)
 	caret_on_ = true;
 	update_scrollbars();
 	invalidate();
+}
+
+// Точка внутри прямоугольника (DIP).
+namespace {
+bool in_rect(const D2D1_RECT_F& r, float x, float y)
+{
+	return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+} // namespace
+
+bool App::over_text_area(float x, float y) const
+{
+	if (ed_ == nullptr)
+		return false;
+	const float w = renderer_.width_dip();
+	const float h = renderer_.height_dip();
+	if (x < 0.0F || y < 0.0F || x > w || y > h)
+		return false;
+	if (y < renderer_.bar_height())
+		return false; // строка меню
+	if (y > h - renderer_.status_height())
+		return false; // статус и полоса поиска
+	if (show_find_ && in_rect(find_view_.rect, x, y))
+		return false;
+	if (ask_.has_panel && ask_.inset > 0.0F && y > h - ask_.inset)
+		return false; // панель вопросов — это кнопки, а не текст
+	return true;
+}
+
+void App::update_cursor(float x, float y)
+{
+	bool caret = false;
+	// Окна настроек и словаря целиком состоят из контролов: галочки, строки,
+	// кнопки — там всегда стрелка. В полосе поиска каретка уместна только в
+	// полях ввода. Над самим текстом — текстовый курсор.
+	if (!options_open_ && !dict_open_)
+	{
+		if (show_find_ && in_rect(find_view_.rect, x, y))
+			caret = in_rect(find_view_.query_rect, x, y) ||
+					(find_view_.replace_mode && in_rect(find_view_.replace_rect, x, y));
+		else
+			caret = over_text_area(x, y);
+	}
+	SetCursor(LoadCursorW(nullptr, caret ? IDC_IBEAM : IDC_ARROW));
 }
 
 void App::on_mouse_move(float x, float y)
@@ -3999,35 +4045,18 @@ bool App::open_mru(std::size_t index)
 	return true;
 }
 
-void App::mark_yofy_changes(std::size_t from, std::size_t to)
+void App::mark_yofy_changes(const std::vector<std::pair<std::size_t, std::size_t>>& marks)
 {
 	yofy_marks_.clear();
 	yofy_mark_index_ = 0;
-	if (!mark_ || buf_ == nullptr)
+	if (!mark_)
 		return;
-	// Замены е→ё в UTF-8 не меняют длину (оба символа — два байта),
-	// поэтому подсвечиваем сами «ё»/«Ё» в обработанном диапазоне: они и есть
-	// сделанные замены. Так же красит замены Mark в оригинале.
-	const std::size_t end = std::min(to, buf_->size());
-	std::size_t pos = from;
-	constexpr std::size_t kChunk = 1U << 16;
+	// Пометки — ровно те символы, которые заменил проход (движок сообщает их
+	// смещения через yofy::YofyResult::marks). Раньше подсвечивались все «ё»
+	// обработанного диапазона, включая стоявшие в тексте изначально.
 	constexpr std::size_t kMaxMarks = 200000;
-	while (pos < end && yofy_marks_.size() < kMaxMarks)
-	{
-		const std::size_t take = std::min(kChunk, end - pos);
-		std::string data;
-		buf_->read(pos, take, data);
-		for (std::size_t i = 0; i + 1 < data.size(); ++i)
-		{
-			const auto c0 = static_cast<unsigned char>(data[i]);
-			const auto c1 = static_cast<unsigned char>(data[i + 1]);
-			if ((c0 == 0xD1U && c1 == 0x91U) || (c0 == 0xD0U && c1 == 0x81U)) // ё / Ё
-				yofy_marks_.emplace_back(pos + i, pos + i + 2);
-		}
-		if (take <= 1)
-			break;
-		pos += take - 1; // байт перекрытия: пара не рвётся на границе куска
-	}
+	yofy_marks_.assign(marks.begin(),
+			marks.begin() + static_cast<std::ptrdiff_t>(std::min(marks.size(), kMaxMarks)));
 }
 
 void App::clear_yofy_marks()
@@ -4524,7 +4553,7 @@ void App::run_yofification(bool from_start)
 
 	if (last_yofy_.changed)
 	{
-		mark_yofy_changes(from, to);
+		mark_yofy_changes(last_yofy_.marks);
 		ed_->set_caret(std::min(from, buf_->size()));
 		refresh_view();
 	}
@@ -4986,7 +5015,7 @@ void App::ask_mouse_move(float x, float y)
 	ask_.hot = hot;
 	if (hot >= 0)
 		ask_.focus = hot;  // Enter подтверждает ту кнопку, на которую смотрит мышь
-	SetCursor(LoadCursorW(nullptr, hot >= 0 ? IDC_HAND : IDC_ARROW));
+	update_cursor(x, y);
 	invalidate();
 }
 
@@ -5443,6 +5472,22 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		on_key_down(wp, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0);
 		return 0;
+	case WM_SETCURSOR:
+		// Курсор выставляем сами по положению указателя, а не классом окна:
+		// иначе над кнопками и галочками оставалась каретка от текста.
+		if (LOWORD(lp) == HTCLIENT)
+		{
+			POINT pt{};
+			if (GetCursorPos(&pt))
+			{
+				ScreenToClient(hwnd_, &pt);
+				const float scale = std::max(1.0F, renderer_.dpi_scale());
+				update_cursor(static_cast<float>(pt.x) / scale,
+					static_cast<float>(pt.y) / scale);
+				return TRUE;
+			}
+		}
+		break;
 	case WM_LBUTTONDOWN:
 	{
 		// Сообщения мыши приходят в физических пикселях, рисуем мы в DIP.
@@ -5492,7 +5537,7 @@ LRESULT App::on_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		const float scale = std::max(1.0F, renderer_.dpi_scale());
 		const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale;
 		const float y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
-		SetCursor(LoadCursorW(nullptr, y < renderer_.bar_height() ? IDC_ARROW : IDC_IBEAM));
+		update_cursor(x, y);
 		if (menu_mouse_move(x, y))
 			return 0;
 		if (dict_mouse_move(x, y))

@@ -1012,7 +1012,12 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		std::size_t line_start = 0;
 		std::size_t from = 0; // срез в байтах строки
 		std::size_t to = 0;
-		std::string_view bytes;
+		// Копия среза строки: TextBuffer::line_text возвращает вид на общий
+		// scratch_, который перезаписывается следующим же вызовом. Пока ряд
+		// ждёт своего прохода, в нём оказывался текст другой строки — из-за
+		// этого пометки ёфикации подсвечивали не те буквы, а смещение росло
+		// при прокрутке. Храним собственную копию среза.
+		std::string bytes;
 		float y = 0.0F;
 		float slice_x = 0.0F;
 	};
@@ -1130,7 +1135,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		d.line_start = ed.buffer().line_start(i);
 		d.from = from_byte;
 		d.to = to_byte;
-		d.bytes = bytes;
+		d.bytes.assign(bytes.substr(from_byte, to_byte - from_byte));
 		d.y = line_y;
 		// Срез рисуется со сдвигом на ширину отброшенного начала строки.
 		d.slice_x = ed.row_width(row, from_byte);
@@ -1151,6 +1156,16 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		}
 		return static_cast<std::size_t>(n);
 	};
+	// Начало символа: смещения из пометок приходят в байтах, и если пометка
+	// устарела (текст правили после ёфикации), граница может попасть внутрь
+	// многобайтового символа — тогда подсвечивалась «половинка» буквы.
+	const auto char_start = [](std::string_view v, std::size_t off) -> std::size_t
+	{
+		while (off > 0 && off < v.size() &&
+			   (static_cast<unsigned char>(v[off]) & 0xC0U) == 0x80U)
+			--off;
+		return off;
+	};
 	// x позиции внутри раскладки (в её координатах).
 	const auto hit_x = [](IDWriteTextLayout* layout, UINT32 pos) -> float
 	{
@@ -1167,14 +1182,19 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		if (d.slot >= cache_.size())
 			return false;
 		const CachedLine& slot = cache_[d.slot];
-		if (slot.layout == nullptr || d.to > d.bytes.size())
+		if (slot.layout == nullptr || d.to - d.from > d.bytes.size())
 			return false;
-		const std::size_t off0 = a - d.line_start;
-		const std::size_t off1 = b - d.line_start;
+		std::size_t off0 = a - d.line_start;
+		std::size_t off1 = b - d.line_start;
 		if (off0 < d.from || off1 > d.to || off0 >= off1)
 			return false;
-		const UINT32 p0 = static_cast<UINT32>(units(d.bytes.substr(d.from, off0 - d.from)));
-		const UINT32 p1 = static_cast<UINT32>(units(d.bytes.substr(d.from, off1 - d.from)));
+		const std::string_view slice(d.bytes);
+		off0 = d.from + char_start(slice, off0 - d.from);
+		off1 = d.from + char_start(slice, off1 - d.from);
+		if (off0 >= off1)
+			return false;
+		const UINT32 p0 = static_cast<UINT32>(units(slice.substr(0, off0 - d.from)));
+		const UINT32 p1 = static_cast<UINT32>(units(slice.substr(0, off1 - d.from)));
 		if (p1 <= p0)
 			return false;
 		const float base = text_x0() + d.slice_x - scroll_x;
@@ -1259,8 +1279,13 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 				const std::size_t b = std::min(yofy_marks[k].second, abs_to);
 				if (a >= b)
 					continue;
-				const auto s0 = static_cast<UINT32>(units(d.bytes.substr(d.from, a - abs_from)));
-				const auto s1 = static_cast<UINT32>(units(d.bytes.substr(d.from, b - abs_from)));
+				const std::string_view slice(d.bytes);
+				const std::size_t r0 = char_start(d.bytes,
+						std::min(a - abs_from, d.bytes.size()));
+				const std::size_t r1 = char_start(d.bytes,
+						std::min(b - abs_from, d.bytes.size()));
+				const auto s0 = static_cast<UINT32>(units(slice.substr(0, r0)));
+				const auto s1 = static_cast<UINT32>(units(slice.substr(0, r1)));
 				if (s1 > s0)
 					want.push_back(DWRITE_TEXT_RANGE{ s0, s1 - s0 });
 			}

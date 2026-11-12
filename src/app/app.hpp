@@ -59,6 +59,11 @@ private:
 	void on_char(wchar_t ch);
 	void on_lbutton_down(float x, float y, bool extend);
 	void on_mouse_move(float x, float y);
+	// Форма курсора по точке (x, y) в DIP: «каретка» (I-beam) только над
+	// текстом документа и полями ввода, над меню, кнопками, галочками и
+	// панелями — обычная стрелка. Иначе над контролами торчала каретка.
+	void update_cursor(float x, float y);
+	[[nodiscard]] bool over_text_area(float x, float y) const;
 	void on_mouse_up();
 	void on_mouse_wheel(int delta);
 	void on_context_menu(int x, int y);
@@ -298,7 +303,9 @@ private:
 	void yofy_goto(bool forward);
 	void clear_yofy_marks();
 	// Подсветка ёфикационных замен в диапазоне (как Mark оригинала).
-	void mark_yofy_changes(std::size_t from, std::size_t to);
+	// Пометки замен: диапазоны берутся из результата прохода (только
+	// фактически заменённые символы), а не сканированием всех «ё».
+	void mark_yofy_changes(const std::vector<std::pair<std::size_t, std::size_t>>& marks);
 
 	void set_document(std::shared_ptr<TextBuffer> buf, const std::filesystem::path& path, Encoding enc,
 					  bool bom);
@@ -387,7 +394,9 @@ private:
 	bool regexs_ = true;
 	bool to_confirm_abbr_ = true;
 	bool check_yo_ = true;		   // CheckYo: «Проверять расстановку "ё"»
-	bool no_var_only_ = false;	   // NoVarOnly: только бесспорные замены
+	// NoVarOnly: только бесспорные замены. По умолчанию включено (в оригинале
+	// было выключено): ёфикатор не задаёт вопросов, а правит очевидные места.
+	bool no_var_only_ = true;
 	bool var_only_ = false;		   // VarOnly: только интерактивные замены
 	bool to_confirm_cap_ = false;  // ToConfirmCap
 	bool to_confirm_ellipsis_ = true; // ToConfirmEllipsis
