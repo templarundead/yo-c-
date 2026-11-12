@@ -1343,6 +1343,8 @@ bool App::ensure_yoficator()
 
 void App::run_yofification()
 {
+	if (yofy_busy_ || ask_.active)
+		return; // проход уже идёт: повторный вход сломал бы состояние
 	if (readonly_)
 	{
 		MessageBeep(MB_ICONASTERISK);
@@ -1422,6 +1424,8 @@ bool App::pump_cancel()
 			quitting_ = true;
 			return true;
 		}
+		if (msg.message == WM_COMMAND)
+			return false; // меню во время прохода: команды не выполняем
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
 	}
@@ -1862,6 +1866,8 @@ void App::apply_eol(Eol eol)
 
 void App::ask_current_word()
 {
+	if (yofy_busy_ || ask_.active)
+		return;
 	if (!ed_ || buf_->line_count() == 0)
 		return;
 	if (readonly_)
