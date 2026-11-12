@@ -537,9 +537,20 @@ void App::layout_menus()
 	{
 		const MenuDef& def = menus_[static_cast<std::size_t>(open_menu_)];
 		const float row_h = std::max(20.0F, renderer_.line_height());
+		// Ширина пункта: подпись + сочетание клавиш справа (в метке они
+		// разделены табуляцией, и таб не должен считаться нулевой шириной).
+		const auto label_width = [this](const std::wstring& label)
+		{
+			const std::size_t tab = label.find(L'\t');
+			if (tab == std::wstring::npos)
+				return renderer_.measure_ui(label);
+			const std::wstring name = label.substr(0, tab);
+			const std::wstring accel = label.substr(tab + 1);
+			return renderer_.measure_ui(name) + 24.0F + renderer_.measure_ui(accel);
+		};
 		float width = 0.0F;
 		for (const MenuEntry& e : def.entries)
-			width = std::max(width, renderer_.measure_ui(e.label) + 28.0F);
+			width = std::max(width, label_width(e.label) + 28.0F);
 		const D2D1_RECT_F& title = menu_title_rects_[static_cast<std::size_t>(open_menu_)];
 		const float top = h;
 		float y = top + 4.0F;
@@ -619,6 +630,11 @@ bool App::menu_mouse_move(float x, float y)
 				invalidate();
 				return true;
 			}
+		}
+		if (hot_item_ != -1)
+		{
+			hot_item_ = -1; // мышь ушла с пункта
+			invalidate();
 		}
 		if (y >= 0.0F && y < renderer_.bar_height())
 			return true;

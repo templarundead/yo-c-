@@ -405,10 +405,32 @@ void Renderer::draw_menu_bar(const MenuBarView& bar)
 			rt_->FillRectangle(item.rect, brush_);
 		}
 		brush_->SetColor(item.enabled ? theme_.text : theme_.status_fg);
-		const D2D1_RECT_F text_rect = D2D1::RectF(item.rect.left + padding_, item.rect.top,
-												  item.rect.right - padding_, item.rect.bottom);
-		rt_->DrawTextW(item.label.c_str(), static_cast<UINT32>(item.label.size()), fmt_ui_, text_rect,
-					   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		// Подпись и акселератор: в метке они разделены табуляцией, а
+		// сочетание клавиш принято выравнивать по правому краю.
+		std::wstring name = item.label;
+		std::wstring accel;
+		const std::size_t tab = name.find(L'\t');
+		if (tab != std::wstring::npos)
+		{
+			accel = name.substr(tab + 1);
+			name.resize(tab);
+		}
+		if (!name.empty())
+		{
+			const D2D1_RECT_F text_rect = D2D1::RectF(item.rect.left + padding_, item.rect.top,
+													  item.rect.right - padding_, item.rect.bottom);
+			rt_->DrawTextW(name.c_str(), static_cast<UINT32>(name.size()), fmt_ui_, text_rect, brush_,
+						   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		}
+		if (!accel.empty())
+		{
+			const float w = measure_ui(accel);
+			brush_->SetColor(item.enabled ? theme_.status_fg : theme_.gutter);
+			rt_->DrawTextW(accel.c_str(), static_cast<UINT32>(accel.size()), fmt_ui_,
+						   D2D1::RectF(item.rect.right - padding_ - w - 6.0F, item.rect.top,
+									   item.rect.right - padding_ - 6.0F, item.rect.bottom),
+						   brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+		}
 		if (item.checked)
 		{
 			brush_->SetColor(theme_.accent);
