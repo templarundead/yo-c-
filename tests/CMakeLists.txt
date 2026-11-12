@@ -28,4 +28,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 include(Catch)
+
+if(MSVC)
+	# catch_discover_tests передаёт имя кейса аргументом, а на Windows узкие
+	# строки командной строки разбираются в системной ANSI-кодепейдже (1252 на
+	# раннерах): кириллица становится «?», Catch2 не находит кейсов и все они
+	# «падают» за 0.01 с. Манифест activeCodePage=UTF-8 переключает CRT на UTF-8
+	# (Windows 10 1903+); /MANIFESTINPUT понимают и link.exe, и lld-link.
+	target_link_options(yo_tests PRIVATE
+		"/MANIFEST:EMBED"
+		"/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/yo_tests.manifest")
+endif()
+
 catch_discover_tests(yo_tests)

@@ -95,24 +95,16 @@ jobs:
             exit 1
           }
 
-      - name: Диагностика кириллицы в аргументах (временный шаг)
+      - name: Диагностика кодировки аргументов (временный шаг)
         shell: pwsh
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $OutputEncoding = [System.Text.Encoding]::UTF8
           $acp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage').ACP
           Write-Host "::warning::ACP системы: $acp"
-          $exe = ".\build\win-msvc-release\tests\yo_tests.exe"
-          $lines = & $exe --list-tests 2>&1
-          $name = ($lines | Where-Object { $_ -match 'регистр' } | Select-Object -First 1)
-          Write-Host "::warning::имя из --list-tests: [$name]"
-          if ($name) {
-            & $exe $name.Trim() 2>&1 | Select-Object -Last 2
-            Write-Host "::warning::прямой вызов из pwsh: exit=$LASTEXITCODE"
-          }
+          ctest --test-dir build/win-msvc-release -N | Select-Object -First 4
           ctest --test-dir build/win-msvc-release -R "регистр" --output-on-failure 2>&1 |
-            Select-Object -Last 10
-          Write-Host "::warning::через ctest -R: exit=$LASTEXITCODE"
+            Select-Object -Last 8
+          Write-Host "::warning::ctest -R регистр: exit=$LASTEXITCODE"
 
       - name: Тесты
         shell: pwsh
