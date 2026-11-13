@@ -1796,9 +1796,15 @@ void App::update_cursor(float x, float y)
 	// полях ввода. Над самим текстом — текстовый курсор.
 	if (!options_open_ && !dict_open_)
 	{
-		if (show_find_ && in_rect(find_view_.rect, x, y))
+		// Открыто меню — его пункты (выпадающая панель menu_panel_) — это
+		// кнопки, а не текст: там всегда стрелка. Панель свисает ниже
+		// полосы меню, в местах, где раньше был текст, и без этой проверки
+		// over_text_area вернул бы true — на пунктах меню горела бы каретка.
+		if (open_menu_ >= 0 && in_rect(menu_panel_, x, y))
+			caret = false;
+		else if (show_find_ && in_rect(find_view_.rect, x, y))
 			caret = in_rect(find_view_.query_rect, x, y) ||
-					(find_view_.replace_mode && in_rect(find_view_.replace_rect, x, y));
+				(find_view_.replace_mode && in_rect(find_view_.replace_rect, x, y));
 		else
 			caret = over_text_area(x, y);
 	}
