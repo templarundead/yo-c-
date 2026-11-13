@@ -230,7 +230,9 @@ ctest --preset win-clang-debug
   `gdi32`, `ole32`, `shell32`, `comdlg32`) остаются, разумеется, системными;
 - **LTO** (`YO_LTO=ON` в релизном пресете): включён только для наших целей
   (ядро, CLI, GUI), сторонние abseil/RE2 собираются без LTO — иначе LTO
-  поверх сотен чужих единиц трансляции заметно замедляет сборку.
+  поверх сотен чужих единиц трансляции заметно замедляет сборку. С clang на
+  Linux LTO требует линковщика LLVM (`YO_LINKER=lld`): биткодные объектные
+  файлы понимает только он.
 
 Остальные опции сборки:
 
@@ -239,7 +241,7 @@ ctest --preset win-clang-debug
 | `YO_STATIC_RUNTIME` | ON | статический CRT у MSVC/clang-cl (в ASan-сборках принудительно динамический) |
 | `YO_LTO` | OFF (ON в `win-clang-release`, `linux-clang-release`) | LTO/IPO в Release; в Debug, с санитайзерами и на драйвере zig автоматически пропускается с сообщением |
 | `YO_STRIP` | OFF (ON в `linux-clang-release` и `tools/build-windows.sh`) | `-Wl,-s` у GNU-подобных линковщиков: у зиг-сборки размер exe падает примерно на треть |
-| `YO_LINKER` | `default` | `mold` — только для ELF (Linux); для PE/MSVC неприменим |
+| `YO_LINKER` | `default` | `mold` или `lld` — только для ELF (Linux); для PE/MSVC неприменим. `lld` обязателен для clang+LTO: GNU ld не читает биткод |
 
 Компилятор: **clang ≥ 21** (в том числе clang из zig 0.15+) — под него
 настроены предупреждения (`-Wconversion -Wsign-conversion -Wold-style-cast`)

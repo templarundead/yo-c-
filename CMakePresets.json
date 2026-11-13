@@ -96,6 +96,7 @@
         "YO_BUILD_BENCH": "OFF",
         "YO_SANITIZERS": "OFF",
         "YO_WARNINGS_AS_ERRORS": "ON",
+        "YO_LINKER": "lld",
         "YO_LTO": "ON",
         "YO_STRIP": "ON"
       }

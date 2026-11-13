@@ -22,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # lld обязателен: с clang биткод LTO линкует только линковщик LLVM.
       - name: LLVM 20 и ninja
         run: |
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
@@ -56,10 +57,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: LLVM 20 и ninja
+      # lld обязателен: биткод LTO у clang линкует только линковщик LLVM,
+      # а GNU ld его не понимает.
+      - name: LLVM 20, lld и ninja
         run: |
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
-          sudo apt-get install -y ninja-build
+          sudo apt-get install -y ninja-build lld-20
 
       - uses: actions/cache@v6
         with:
