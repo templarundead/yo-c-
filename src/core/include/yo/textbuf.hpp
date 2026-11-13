@@ -44,6 +44,8 @@ public:
 	[[nodiscard]] std::size_t line_of(std::size_t offset) const;
 
 	// Текст строки без EOL (копия во внутренний буфер).
+	// ВАЖНО: вид живёт до следующего вызова line_text/read_chunk — буфер общий.
+	// Хранить его дольше одного выражения нельзя: копируйте (std::string).
 	[[nodiscard]] std::string_view line_text(std::size_t line) const;
 
 	// Копия произвольного диапазона.
@@ -139,6 +141,7 @@ private:
 	std::vector<Group> redo_;
 	Group pending_;
 	bool in_group_ = false;
+	int group_depth_ = 0; // вложенные begin_group: правки всё равно в одну группу
 	bool modified_ = false;
 };
 

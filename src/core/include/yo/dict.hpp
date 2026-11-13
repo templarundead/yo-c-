@@ -85,6 +85,9 @@ public:
 	}
 
 	void reset_user_sel() noexcept;
+	// Есть ли хоть один запомненный ответ «Всегда Е/Ё» (для состояния пункта
+	// «Сбросить "Всегда Е/Ё"», как SetMenuItem('Clearusersel1') оригинала).
+	[[nodiscard]] bool has_user_sel() const noexcept;
 
 	// Счётчики замен по словарю (Ye2Ye, Ye2Yo, Yo2Ye, Yo2Yo).
 	struct WordStat

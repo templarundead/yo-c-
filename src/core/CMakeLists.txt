@@ -10,6 +10,13 @@ add_library(yo_core STATIC
 	src/utf.cpp
 	src/yofytext.cpp
 	src/askpanel.cpp
+	src/find.cpp
+	src/mru.cpp
+	src/optionspanel.cpp
+	src/usersel.cpp
+	src/dictedit.cpp
+	src/ini.cpp
+	src/ranges.cpp
 )
 add_library(yo::core ALIAS yo_core)
 
@@ -24,3 +31,6 @@ else()
 endif()
 
 set_target_properties(yo_core PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+
+# LTO/IPO и strip — только в релизных сборках (см. корневой CMakeLists.txt).
+yo_apply_release_tweaks(yo_core)

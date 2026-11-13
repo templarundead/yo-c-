@@ -139,22 +139,48 @@ TEST_CASE("ёфикация: вопросы движка и ответы пол�
 	CHECK(buf->text() == "\u0432\u0441\u0435 \u0435\u0449\u0451\n");
 }
 
-TEST_CASE("ёфикация: «Откат» не меняет документ, «Прервать» сохраняет сделанное", "[yofytext]")
+TEST_CASE("ёфикация: «Откат» снимает последнюю замену, «Прервать» останавливает проход", "[yofytext]")
 {
 	Engine e;
 	Options opts;
 	opts.always_ask = true;
 	e.yofy.set_options(opts);
 
-	SECTION("откат на втором вопросе")
+	SECTION("откат на третьем вопросе оставляет первые ответы")
+	{
+		// Три вопроса: «все», «еще», «все». Первые два — «Ё», на третьем
+		// «Откат»: он отменяет ПРЕДЫДУЩУЮ замену («ещё» → «еще»), а первые
+		// ответы остаются в документе. Раньше откат сбрасывал весь проход.
+		auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435 \u0432\u0441\u0435\n");
+		std::size_t n = 0;
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 3 ? AskAnswer::undo : AskAnswer::yo; });
+		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+		CHECK_FALSE(r.cancelled);
+		CHECK(r.changed);
+		CHECK(r.reverted == 1);
+		CHECK(buf->text() == "\u0432\u0441\u0451 \u0435\u0449\u0435 \u0432\u0441\u0435\n");
+	}
+
+	SECTION("откат, когда отменять нечего — как «пропустить»")
 	{
 		auto buf = tb("\u0432\u0441\u0435 \u0435\u0449\u0435\n");
+		std::size_t n = 0;
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 1 ? AskAnswer::undo : AskAnswer::yo; });
+		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+		CHECK_FALSE(r.cancelled);
+		CHECK(r.changed);
+		CHECK(r.reverted == 0);
+		CHECK(buf->text() == "\u0432\u0441\u0435 \u0435\u0449\u0451\n");
+	}
+
+	SECTION("откат последней замены возвращает документ к исходному")
+	{
+		// «все все»: первое слово — «Ё», на втором «Откат» снимает его.
+		auto buf = tb("\u0432\u0441\u0435 \u0432\u0441\u0435\n");
 		const std::string before = buf->text();
 		std::size_t n = 0;
-		e.yofy.set_ask([&](const AskRequest&) { return ++n == 2 ? AskAnswer::undo : AskAnswer::yo; });
+		e.yofy.set_ask([&](const AskRequest&) { return ++n == 1 ? AskAnswer::yo : AskAnswer::undo; });
 		const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
-		CHECK(r.rolled_back);
-		CHECK_FALSE(r.cancelled);
 		CHECK_FALSE(r.changed);
 		CHECK(buf->text() == before);
 		CHECK_FALSE(buf->can_undo());
@@ -220,4 +246,249 @@ TEST_CASE("ёфикация: пустой документ и пустой ди�
 
 	auto buf = tb("все еще\n");
 	CHECK_FALSE(yofify_range(*buf, 3, 3, e.yofy).changed);
+}
+
+TEST_CASE("ёфикация: внешняя отмена прекращает проход", "[yofytext]")
+{
+	Engine e;
+	// Текст без ё-неоднозначностей: проверяем именно механику отмены.
+	std::string text;
+	for (int i = 0; i < 500; ++i)
+		text += "строка без замен номер " + std::to_string(i) + "\n";
+	auto buf = tb(text);
+
+	std::size_t seen = 0;
+	const YofyResult r = yofify_range(
+		*buf, 0, buf->size(), e.yofy, [&](std::size_t) { ++seen; }, [&] { return seen >= 10; });
+
+	CHECK(r.cancelled);
+	CHECK_FALSE(r.rolled_back);
+	// Отмена приходит перед обработкой строки: девять строк обработано,
+	// на десятой проход остановился — а не прошёл все 500.
+	CHECK(r.lines == 9);
+	CHECK(seen == 10);
+}
+
+TEST_CASE("ёфикация: без отмены проход идёт до конца", "[yofytext]")
+{
+	Engine e;
+	std::string text;
+	for (int i = 0; i < 50; ++i)
+		text += "еще одна строка " + std::to_string(i) + "\n";
+	auto buf = tb(text);
+	std::size_t seen = 0;
+	const YofyResult r = yofify_range(
+		*buf, 0, buf->size(), e.yofy, [&](std::size_t) { ++seen; }, [&] { return false; });
+	CHECK_FALSE(r.cancelled);
+	CHECK(r.lines == 50);
+	CHECK(seen == 50);
+}
+
+TEST_CASE("ёфикация документа кусками: одна отмена на весь проход", "[yofytext]")
+{
+	Engine e;
+	// Много строк с заменами: куски по две строки — проверяем склейку.
+	std::string text;
+	for (int i = 0; i < 12; ++i)
+		text += "все еще не пришел\n";
+	auto buf = tb(text);
+	const std::string before = buf->text();
+
+	std::vector<std::size_t> seen;
+	const YofyResult r = yofify_document(
+		*buf, 0, buf->size(), e.yofy, 2, [&](std::size_t line) { seen.push_back(line); },
+		{});
+
+	CHECK(r.changed);
+	CHECK_FALSE(r.cancelled);
+	CHECK(r.lines == 12);
+	CHECK(r.replaced > 0);
+	// Прогресс сообщается по строкам документа, по порядку и без пропусков.
+	REQUIRE(seen.size() == 12);
+	for (std::size_t i = 0; i < seen.size(); ++i)
+		CHECK(seen[i] == i);
+
+	CHECK(buf->text().find("всё ещё не пришёл") != std::string::npos);
+	CHECK(buf->line_count() == 13);
+
+	// Один шаг отмены возвращает весь документ.
+	REQUIRE(buf->undo());
+	CHECK(buf->text() == before);
+	CHECK_FALSE(buf->undo()); // и больше ничего не осталось
+}
+
+TEST_CASE("ёфикация документа кусками: отмена посреди прохода", "[yofytext]")
+{
+	Engine e;
+	std::string text;
+	for (int i = 0; i < 8; ++i)
+		text += "все еще\n";
+	auto buf = tb(text);
+
+	std::size_t calls = 0;
+	const YofyResult r = yofify_document(
+		*buf, 0, buf->size(), e.yofy, 2, [](std::size_t) {},
+		[&] { return ++calls > 3; }); // отмена после третьей проверки
+
+	CHECK(r.cancelled);
+	CHECK(r.lines < 8); // проход не дошёл до конца
+	CHECK(buf->text().find("всё ещё") != std::string::npos); // сделанное осталось
+	REQUIRE(buf->undo());
+	CHECK(buf->text().find("все еще") != std::string::npos);
+}
+
+TEST_CASE("ёфикация документа кусками: диапазон и пустой документ", "[yofytext]")
+{
+	Engine e;
+	auto empty = tb("");
+	CHECK_FALSE(yofify_document(*empty, 0, 0, e.yofy).changed);
+
+	auto buf = tb("все еще\nвсе еще\n");
+	const std::size_t second = buf->line_start(1);
+	CHECK(yofify_document(*buf, second, buf->size(), e.yofy, 1).changed);
+	CHECK(buf->text().rfind("все еще\n", 0) == 0);
+	CHECK(buf->text().find("всё ещё\n", 8) != std::string::npos);
+}
+
+TEST_CASE("пометки ёфикации: только заменённые символы, смещения точные", "[yofytext]")
+{
+	Engine e;
+	// «ещё» уже содержит ё — эта буква не заменялась и в пометки попасть не
+	// должна. Остальные «е» движок меняет (вопросы решены «Всегда Ё»).
+	const std::string before = "Все ещё не пришел.\r\nОн все равно придет.\n";
+	auto buf = tb(before);
+	const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+	REQUIRE(r.changed);
+	REQUIRE(r.replaced > 0);
+	REQUIRE(r.marks.size() == r.replaced);
+
+	const std::string after = buf->text();
+	REQUIRE(after.size() == before.size()); // смещения сравнимы
+
+	std::size_t prev_end = 0;
+	for (const auto& [from, to] : r.marks)
+	{
+		INFO(from << ".." << to);
+		REQUIRE(to > from);
+		CHECK(to - from == 2); // ё/Ё в UTF-8 — два байта
+		CHECK(from >= prev_end); // отсортированы и не пересекаются
+		prev_end = to;
+		// В результате под пометкой стоит именно ё.
+		const std::string ch = after.substr(from, to - from);
+		CHECK((ch == "ё" || ch == "Ё"));
+		// А в исходном тексте на этом месте было «е»/«Е» — то есть пометка
+		// стоит ровно на заменённом символе, а не на соседнем.
+		const std::string was = before.substr(from, to - from);
+		CHECK((was == "е" || was == "Е"));
+	}
+
+	// Предсуществующая ё в «ещё» не помечена.
+	const std::size_t yo = before.find("ещё");
+	REQUIRE(yo != std::string::npos);
+	for (const auto& [from, to] : r.marks)
+		CHECK_FALSE((from <= yo + 2 && yo + 2 < to));
+}
+
+TEST_CASE("пометки ёфикации: откат снимает и замену, и пометку", "[yofytext]")
+{
+	Engine e;
+	auto buf = tb("все еще\n");
+	std::size_t first_mark = 0;
+	std::size_t answered = 0;
+	e.yofy.set_ask(
+		[&](const AskRequest&) {
+			// На второй вопрос — «Откат»: предыдущая замена снимается.
+			if (++answered == 2)
+				return AskAnswer::undo;
+			return AskAnswer::yo;
+		});
+	const YofyResult r = yofify_range(*buf, 0, buf->size(), e.yofy);
+	if (r.replaced > 0)
+		first_mark = r.marks.front().first;
+	(void)first_mark;
+	// Сколько замен осталось — столько и пометок; лишних нет.
+	CHECK(r.marks.size() == r.replaced);
+	for (const auto& [from, to] : r.marks)
+	{
+		const std::string ch = buf->text().substr(from, to - from);
+		CHECK((ch == "ё" || ch == "Ё"));
+	}
+}
+
+TEST_CASE("ёфикация не портит текст: меняются только е и ё", "[yofytext]")
+{
+	// Текст из жалобы: строки с неоднозначными словами и с контекстом РВ стоят
+	// рядом со строками без замен. Раньше в собранный текст попадало содержимое
+	// соседней строки (вид из line_text затирался вызовом из движка во время
+	// разбора), и документ ломался: строки склеивались, буквы пропадали.
+	const std::string text =
+		"Постой, не уходи!\n\n"
+		"Мы ждали лета – пришла зима\n\n"
+		"Мы заходили в дома,\n\n"
+		"Но в домах шел снег\n\n"
+		"Мы ждали завтрашний день,\n\n"
+		"Каждый день ждали завтрашний день\n\n"
+		"Мы прячем глаза за шторами век\n\n"
+		"В наших глазах крики \"вперед!\"\n\n"
+		"В наших глазах окрики \"стой!\"\n\n"
+		"В наших глазах рождение дня\n\n"
+		"И смерть огня\n\n"
+		"В наших глазах звездная ночь,\n\n"
+		"Мы хотели пить, не было воды\n\n"
+		"Мы хотели света, не было звезды\n\n"
+		"Мы выходили под дождь\n\n"
+		"И пили воду из луж\n\n"
+		"Мы носили траур, оркестр играл туш…\n";
+
+	// Разрешена только замена одного символа е/Е <-> ё/Ё: ни сдвигов, ни
+	// пропавших букв, ни текста из других строк.
+	const auto only_ye_yo = [](const UString& before, const UString& after)
+	{
+		if (before.size() != after.size())
+			return false;
+		for (std::size_t i = 0; i < before.size(); ++i)
+		{
+			if (before[i] == after[i])
+				continue;
+			const bool swap = (before[i] == U'е' && after[i] == U'ё') ||
+							  (before[i] == U'Е' && after[i] == U'Ё') ||
+							  (before[i] == U'ё' && after[i] == U'е') ||
+							  (before[i] == U'Ё' && after[i] == U'Е');
+			if (!swap)
+				return false;
+		}
+		return true;
+	};
+
+	for (const bool no_var_only : { false, true })
+	{
+		INFO("no_var_only=" << no_var_only);
+		Engine e;
+		Options opts;
+		opts.no_var_only = no_var_only;
+		e.yofy.set_options(opts);
+
+		auto buf = tb(text);
+		const std::size_t lines_before = buf->line_count();
+		const YofyResult r = yofify_document(*buf, 0, buf->size(), e.yofy, 2048);
+		INFO(buf->text());
+		CHECK(r.changed);
+		CHECK(buf->line_count() == lines_before);
+		REQUIRE(buf->text().size() == text.size());
+
+		// Построчно: содержимое на месте, отличаются только е/ё.
+		auto src = tb(text);
+		for (std::size_t i = 0; i < src->line_count(); ++i)
+		{
+			const UString was = decode_line(
+				{ reinterpret_cast<const std::uint8_t*>(src->line_text(i).data()), src->line_text(i).size() },
+				Encoding::utf8);
+			const std::string after_bytes(buf->line_text(i));
+			const UString now = decode_line(
+				{ reinterpret_cast<const std::uint8_t*>(after_bytes.data()), after_bytes.size() },
+				Encoding::utf8);
+			INFO("строка " << i);
+			CHECK(only_ye_yo(was, now));
+		}
+	}
 }

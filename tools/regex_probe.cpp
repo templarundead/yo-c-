@@ -5,6 +5,7 @@
 //   yo-regex-probe <yo_regexpr.dat> [--dump] [--ctx "<контекст>" --word "<слово>"]
 
 #include "yo/cp1251.hpp"
+#include "yo/env.hpp"
 #include "yo/regexdict.hpp"
 
 #include <cstdlib>
@@ -84,16 +85,17 @@ int main(int argc, char** argv)
 						 r.lead_boundary, r.trail_boundary);
 		}
 	}
-	if (const char* pat = std::getenv("YO_PROBE_PATTERN"); pat != nullptr)
+	if (const auto pat_value = env_var("YO_PROBE_PATTERN"); pat_value.has_value())
 	{
+		const char* pat = pat_value->c_str();
 		re2::RE2::Options o;
 		o.set_log_errors(true);
 		o.set_dot_nl(true);
 		re2::RE2 re(pat, o);
 		std::println("pattern ok={} error='{}' groups={}", re.ok(), re.error(),
 					 re.NumberOfCapturingGroups());
-		const char* text = std::getenv("YO_PROBE_TEXT") != nullptr ? std::getenv("YO_PROBE_TEXT")
-																   : "";
+		const std::string text_storage = env_var("YO_PROBE_TEXT").value_or(std::string());
+		const char* text = text_storage.c_str();
 		re2::StringPiece m[4];
 		const bool hit = re.Match(re2::StringPiece(text), 0, std::strlen(text),
 								  re2::RE2::UNANCHORED, m, 4);

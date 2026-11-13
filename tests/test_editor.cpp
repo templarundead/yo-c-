@@ -277,6 +277,82 @@ TEST_CASE("видимые строки: ленивый диапазон", "[edit
 	CHECK(ed->first_visible_line() == 0);
 }
 
+TEST_CASE("видимость ряда: координаты, а не высота окна", "[editor]")
+{
+	// Полоса окна [26, 230] — как в рендерере: 26 px полоса меню, дальше текст.
+	constexpr float top = 26.0F;
+	constexpr float bottom = 230.0F;
+	constexpr float lh = 17.0F;
+
+	CHECK(row_in_view(top, lh, top, bottom));
+	// Последняя строка в конце документа: 213..230 — целиком в окне.
+	CHECK(row_in_view(213.0F, lh, top, bottom));
+	CHECK(row_in_view(bottom, lh, top, bottom));		 // начинается на границе
+	CHECK(row_in_view(top - lh, lh, top, bottom));		 // уходит под полосу меню
+	CHECK(row_in_view(bottom - 1.0F, lh, top, bottom));	 // подрезан снизу
+
+	CHECK_FALSE(row_in_view(bottom + 1.0F, lh, top, bottom));
+	CHECK_FALSE(row_in_view(top - lh - 1.0F, lh, top, bottom));
+}
+
+TEST_CASE("последняя строка в конце документа видна", "[editor]")
+{
+	// Регрессия: проход отрисовки текста сравнивал y ряда с высотой текстовой
+	// области вместо её нижней границы, поэтому последняя строка в конце
+	// документа (она целиком лежит в окне) не рисовалась. Выделение рисуется
+	// другим проходом, без такой проверки и до клипа, — строка выглядела пустой
+	// полосой, но выделялась и копировалась.
+	std::string text;
+	for (int i = 0; i < 588; ++i)
+	{
+		text += "строка ";
+		text += std::to_string(i + 1);
+		text += "\n";
+	}
+	text += "последняя строка";
+	auto ed = editor(text);
+
+	Metrics m;
+	m.line_height = 17.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+
+	// Полоса меню сверху и статусбар снизу — как у настоящего окна.
+	constexpr float bar = 26.0F;
+	constexpr float status = 20.0F;
+	for (const float height : { 200.0F, 250.0F, 400.0F, 600.0F })
+	{
+		const float text_h = height - bar - status;
+		ed->set_viewport(1200.0F, text_h);
+		ed->move_doc_end();
+		REQUIRE(ed->scroll_y() > 0.0F); // документ выше окна: вид в конце
+
+		const float area_bottom = bar + text_h;
+		bool last_drawn = false;
+		for (const Editor::Row& row : ed->visible_rows())
+		{
+			const float y = bar + row.top - ed->scroll_y();
+			const bool visible = row_in_view(y, m.line_height, bar, area_bottom);
+			if (!visible)
+				continue;
+			if (row.line + 1 != ed->buffer().line_count())
+				continue;
+			last_drawn = true;
+			// Ряд не «подрезан краем»: он весь внутри видимой области.
+			CHECK(y >= bar);
+			CHECK(y + m.line_height <= area_bottom);
+		}
+		CHECK(last_drawn);
+
+		// Та самая арифметика, из-за которой строка пропадала: координата
+		// меньше нижней границы области, но больше её высоты.
+		const float y_last =
+			bar + ed->line_top(ed->buffer().line_count() - 1) - ed->scroll_y();
+		CHECK(y_last > text_h);
+		CHECK(y_last < area_bottom);
+	}
+}
+
 TEST_CASE("редактор поверх mmap: правки не трогают файл", "[editor]")
 {
 	auto src = std::make_shared<MemorySource>(std::string("файл\r\nне меняется\n"));
@@ -288,4 +364,188 @@ TEST_CASE("редактор поверх mmap: правки не трогают 
 	CHECK(ed->buffer().line_count() == 3);
 	ed->buffer().undo();
 	CHECK(ed->buffer().text() == "файл\r\nне меняется\n");
+}
+
+TEST_CASE("прокрутка: перерисовка не отматывает вид назад", "[editor]")
+{
+	auto ed = editor("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F); // 3 строки в окне
+
+	// Курсор в начале документа, пользователь прокрутил колесом/полосой.
+	ed->scroll_lines(4);
+	CHECK(ed->scroll_y() == 40.0F);
+	CHECK(ed->first_visible_line() == 4);
+
+	// Рендерер на каждой перерисовке заново сообщает размеры окна и метрики:
+	// это не должно отменять прокрутку (регрессия «не работает скролл»).
+	ed->set_viewport(100.0F, 30.0F);
+	CHECK(ed->scroll_y() == 40.0F);
+	CHECK(ed->first_visible_line() == 4);
+	ed->set_metrics(m);
+	CHECK(ed->scroll_y() == 40.0F);
+	CHECK(ed->first_visible_line() == 4);
+
+	// Горизонтальная прокрутка так же переживает перерисовку.
+	auto wide = editor(std::string(200, 'x'));
+	wide->set_metrics(m);
+	wide->set_viewport(100.0F, 30.0F);
+	wide->scroll_by(120.0F, 0.0F);
+	CHECK(wide->scroll_x() == 120.0F);
+	wide->set_viewport(100.0F, 30.0F);
+	CHECK(wide->scroll_x() == 120.0F);
+
+	// А вот курсор, уехавший за край, по-прежнему возвращается в поле зрения.
+	ed->move_doc_start();
+	CHECK(ed->scroll_y() == 0.0F);
+}
+
+TEST_CASE("клик: экранные координаты при прокрутке", "[editor]")
+{
+	auto ed = editor("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F); // три строки в окне
+
+	ed->scroll_lines(5);
+	REQUIRE(ed->first_visible_line() == 5);
+
+	// Верхняя строка окна — это строка 5 документа, а не 0 и не 10.
+	CHECK(ed->offset_at_client(0.0F, 1.0F) == ed->buffer().line_start(5));
+	CHECK(ed->offset_at_client(0.0F, 21.0F) == ed->buffer().line_start(7));
+	// Отступ слева учитывается отдельно.
+	CHECK(ed->offset_at_client(16.0F, 1.0F, 16.0F) == ed->buffer().line_start(5));
+	CHECK(ed->offset_at_client(24.0F, 1.0F, 16.0F) == ed->buffer().line_start(5) + 1);
+
+	// Без прокрутки — как раньше.
+	ed->scroll_lines(-100);
+	CHECK(ed->offset_at_client(0.0F, 1.0F) == 0);
+	CHECK(ed->offset_at_client(0.0F, 11.0F) == ed->buffer().line_start(1));
+}
+
+TEST_CASE("вставка большого текста и прокрутка (без падений)", "[editor]")
+{
+	// Регрессия: вставка длинного текста роняла программу — раскладки рядов
+	// в кэше рендерера перевыделялись, а указатели на них (теперь индексы)
+	// оставались висячими. Здесь проверяем сам редактор: вставка 2 МБ,
+	// прокрутка по всему документу и чтение геометрии видимых рядов.
+	auto ed = editor("начало");
+	ed->set_viewport(800.0F, 300.0F);
+	std::string chunk;
+	chunk.reserve(2U * 1024U * 1024U);
+	for (int i = 0; i < 20000; ++i)
+		chunk += "строка номер " + std::to_string(i) + " с текстом и словами\n";
+	ed->move_doc_end();
+	REQUIRE(ed->paste(chunk));
+	CHECK(ed->buffer().line_count() > 20000U);
+	// Прокрутка до конца и обратно: видимые ряды должны быть корректны.
+	ed->move_doc_end();
+	for (int i = 0; i < 50; ++i)
+	{
+		const std::vector<Editor::Row> rows = ed->visible_rows();
+		REQUIRE(!rows.empty());
+		for (const Editor::Row& row : rows)
+		{
+			CHECK(row.line < ed->buffer().line_count());
+			CHECK(row.from <= row.to);
+			CHECK(row.to <= ed->buffer().line_text(row.line).size());
+		}
+		ed->scroll_lines(-3);
+	}
+}
+
+TEST_CASE("пустой документ: нет ширины текста и прокрутки", "[editor]")
+{
+	// Из этого считается видимость полос прокрутки: в пустом окне не должно
+	// быть ни горизонтальной полосы, ни запаса по высоте.
+	auto ed = editor("");
+	ed->set_viewport(800.0F, 300.0F);
+	CHECK(ed->buffer().size() == 0);
+	CHECK(ed->text_width() == 0.0F);
+	CHECK(ed->content_height() <= 300.0F);
+	CHECK(ed->scroll_x() == 0.0F);
+	REQUIRE(ed->paste("короткая строка"));
+	CHECK(ed->text_width() > 0.0F);
+}
+
+TEST_CASE("прокрутка: абсолютная позиция доходит до краёв", "[editor]")
+{
+	// Полоса прокрутки работает с абсолютной позицией (в рядах/символах),
+	// поэтому set_scroll_y должен ставить смещение напрямую: SB_TOP → 0,
+	// SB_BOTTOM → content - view_h. Раньше использовалась дельта
+	// (target - first_visible_row) * lh, и дробная часть scroll_y
+	// (от ensure_caret_visible) «зависала» — первая строка оставалась
+	// подрезанной, а бегунок не доезжал до края.
+	auto ed = editor("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F); // 3 строки
+
+	// Вверх — первая строка ровно у верхнего края.
+	ed->set_scroll_y(0.0F);
+	CHECK(ed->scroll_y() == 0.0F);
+	CHECK(ed->first_visible_line() == 0);
+
+	// Вниз — последняя строка ровно у нижнего края.
+	ed->set_scroll_y(100.0F); // за пределы — кламп
+	CHECK(ed->scroll_y() == 70.0F); // 10 строк * 10 - 30
+	CHECK(ed->first_visible_line() == 7);
+	const std::size_t last = ed->buffer().line_count() - 1;
+	CHECK(ed->line_top(last) - ed->scroll_y() >= 0.0F); // не уходит под верх
+	CHECK(ed->line_top(last) + m.line_height - ed->scroll_y() <= ed->viewport_height()); // не уходит под низ
+
+	// Дробная высота окна (не кратная lh): SB_BOTTOM ставит content - view_h.
+	ed->set_viewport(100.0F, 35.0F);
+	ed->set_scroll_y(65.0F); // 100 - 35
+	CHECK(ed->scroll_y() == 65.0F);
+	CHECK(ed->line_top(last) + m.line_height - ed->scroll_y() <= ed->viewport_height());
+}
+
+TEST_CASE("прокрутка: горизонтальная абсолютная позиция", "[editor]")
+{
+	auto ed = editor(std::string(100, 'x'));
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F);
+	CHECK(ed->text_width() == 800.0F);
+
+	ed->set_scroll_x(0.0F);
+	CHECK(ed->scroll_x() == 0.0F);
+	// Вправо: max = text_width - view_w + cw = 800 - 100 + 8.
+	ed->set_scroll_x(1000.0F);
+	CHECK(ed->scroll_x() == 708.0F);
+	ed->set_scroll_x(-100.0F);
+	CHECK(ed->scroll_x() == 0.0F);
+}
+
+TEST_CASE("ширина текста: уменьшается после удаления длинной строки", "[editor]")
+{
+	// Регрессия: кэш ширины был максимумом «как было» и спускался только
+	// в set_metrics. После удаления самой длинной строки text_width()
+	// возвращал прежнее значение, и горизонтальная полоса прокрутки
+	// висела в окне без текста. Теперь after_edit ставит width_dirty_.
+	auto ed = editor(std::string(100, 'x') + "\nкороткая");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F);
+	CHECK(ed->text_width() == 800.0F); // 100 символов * 8 px
+
+	// Выделяем первую строку вместе с переводом и удаляем её.
+	ed->set_caret(0);
+	ed->set_caret(101, true); // [0, 101): 100 'x' + '\n'
+	REQUIRE(ed->has_selection());
+	ed->delete_selection();
+	CHECK(ed->buffer().line_count() == 1);
+	CHECK(ed->text_width() == 64.0F); // «короткая» = 8 символов * 8 px
 }

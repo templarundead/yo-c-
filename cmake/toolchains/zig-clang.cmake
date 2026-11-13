@@ -19,11 +19,22 @@ file(WRITE "${_yo_tools}/zig-ar.sh"
 	"#!/bin/sh\nexec \"${YO_ZIG_DRIVER}\" ar \"$@\"\n")
 file(WRITE "${_yo_tools}/zig-ranlib.sh"
 	"#!/bin/sh\nexec \"${YO_ZIG_DRIVER}\" ranlib \"$@\"\n")
+file(WRITE "${_yo_tools}/zig-rc.sh" "#!/bin/sh\nexec \"${YO_ZIG_DRIVER}\" rc \"$@\"\n")
 file(CHMOD "${_yo_tools}/zig-ar.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
 file(CHMOD "${_yo_tools}/zig-ranlib.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+file(CHMOD "${_yo_tools}/zig-rc.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+# Компилятор ресурсов (манифест GUI): zig умеет rc.exe подкомандой «zig rc»,
+# а CMake ждёт путь к исполняемому файлу — отсюда обёртка.
+set(CMAKE_RC_COMPILER "${_yo_tools}/zig-rc.sh")
 
 set(CMAKE_AR "${_yo_tools}/zig-ar.sh")
 set(CMAKE_RANLIB "${_yo_tools}/zig-ranlib.sh")
+
+# LTO драйверу zig недоступен: lld-link падает на «undefined symbol: nanl»
+# из zigc.lib (проверено на zig 0.17.1, x86_64-windows-gnu). Конфигурацию
+# обрывать не надо — просто не включаем IPO (и не тратим время на
+# check_ipo_supported, который тоже линкует тестовую программу).
+set(YO_NO_IPO TRUE)
 
 # CMake не умеет определять стандарт по умолчанию для драйвера zig c++.
 set(CMAKE_CXX_STANDARD_COMPUTED_DEFAULT 23 CACHE STRING "" FORCE)

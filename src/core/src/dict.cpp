@@ -463,6 +463,11 @@ void Dictionary::reset_user_sel() noexcept
 	std::ranges::fill(user_sel_, 0);
 }
 
+bool Dictionary::has_user_sel() const noexcept
+{
+	return std::ranges::any_of(user_sel_, [](std::int8_t v) { return v != 0; });
+}
+
 void Dictionary::note_outcome(std::size_t i, bool old_is_ye, bool old_is_yo, bool new_is_ye,
 							  bool new_is_yo) noexcept
 {

@@ -5,7 +5,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 using namespace yo;
 
@@ -73,7 +75,8 @@ TEST_CASE("панель вопросов: тексты вариантов и п�
 	req.word2 = u("всё");
 	AskTexts texts = make_ask_texts(req);
 	CHECK(texts.variants == "1  Е: все          2  Ё: всё");
-	CHECK(texts.reason == "выберите написание");
+	// Заголовок панели — как в оригинале («Выберите верный вариант»).
+	CHECK(texts.reason == "Выберите верный вариант");
 
 	SECTION("без варианта с ё второй кнопки в тексте нет")
 	{
@@ -192,4 +195,185 @@ TEST_CASE("панель вопросов: невысокое окно — пан
 	REQUIRE(layout.visible);
 	CHECK(layout.y >= 0.0F);
 	CHECK(layout.h > 0.0F);
+}
+
+TEST_CASE("панель вопросов: контекст из нескольких строк", "[askpanel]")
+{
+	// В панели — всё предложение: оно переносится по ширине и занимает
+	// несколько строк, панель обязана вырасти, а не обрезать его.
+	AskLayoutInput in = base_input();
+	in.context = "и вот мы все еще не пришли\nдомой, а дождь всё идёт";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.rows.size() >= 4); // варианты, причина и две строки контекста
+	std::size_t context_rows = 0;
+	for (const AskLayout::Row& row : layout.rows)
+	{
+		if (row.text.find("домой") != std::string::npos || row.text.find("не пришли") != std::string::npos)
+			++context_rows;
+	}
+	CHECK(context_rows >= 2);
+}
+
+TEST_CASE("панель вопросов: кнопки достаточно крупные для мыши", "[askpanel]")
+{
+	AskLayoutInput in = base_input();
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(!layout.buttons.empty());
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		CHECK(b.h >= in.line_height + 2.0F * 3.0F); // строка текста + отступы
+		CHECK(b.w > in.char_width * 4.0F);
+	}
+}
+
+TEST_CASE("панель вопросов: полоса снизу, кнопки в две колонки", "[askpanel]")
+{
+	// Как AskPanel оригинала: полоса во всю ширину над строкой состояния,
+	// заголовок по центру, кнопки подписаны самими вариантами слова.
+	AskLayoutInput in = base_input();
+	in.bottom_bar = true;
+	in.word1 = "передохнем";
+	in.word2 = "передохнём";
+	in.context = "дина нам бог послал, при таком-то передохнем: А кричит";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.bottom);
+	CHECK(layout.x == 0.0F);
+	CHECK(layout.w == in.client_w);
+	CHECK(layout.y + layout.h == in.client_h - in.status_h);
+
+	// Сначала предложение с обрабатываемым словом, под ним — заголовок,
+	// под заголовком — кнопки (как просил пользователь).
+	REQUIRE(!layout.rows.empty());
+	std::size_t context_row = layout.rows.size();
+	std::size_t title_row = layout.rows.size();
+	for (std::size_t i = 0; i < layout.rows.size(); ++i)
+	{
+		if (layout.rows[i].text.find("передохнем") != std::string::npos)
+			context_row = i;
+		if (layout.rows[i].kind == AskRowKind::title)
+			title_row = i;
+	}
+	REQUIRE(context_row < layout.rows.size());
+	REQUIRE(title_row < layout.rows.size());
+	CHECK(layout.rows[title_row].text == in.reason);
+	CHECK(context_row < title_row);
+	// Контекст — одной строкой (без переносов), слово видно целиком.
+	CHECK(context_row + 1 == title_row);
+
+	// Семь кнопок: две колонки по три и «Прервать» во всю ширину.
+	REQUIRE(layout.buttons.size() == 7);
+	const AskButtonBox* cancel_box = nullptr;
+	for (const AskButtonBox& b : layout.buttons)
+		if (b.choice == AskChoice::cancel)
+			cancel_box = &b;
+	REQUIRE(cancel_box != nullptr);
+	float left_x = layout.buttons.front().x;
+	for (const AskButtonBox& b : layout.buttons)
+		left_x = std::min(left_x, b.x);
+	CHECK(cancel_box->x == left_x);
+	// Ширина «Прервать» — как у двух колонок вместе.
+	float two_cols = 0.0F;
+	for (const AskButtonBox& b : layout.buttons)
+		if (b.choice != AskChoice::cancel)
+			two_cols = std::max(two_cols, b.x + b.w - left_x);
+	CHECK(cancel_box->w >= two_cols - 1.0F);
+	std::vector<float> xs;
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		if (std::find(xs.begin(), xs.end(), b.x) == xs.end())
+			xs.push_back(b.x);
+	}
+	CHECK(xs.size() == 2);
+
+	// Подписи: слово + клавиша.
+	auto label_of = [&](AskChoice choice)
+	{
+		for (const AskButtonBox& b : layout.buttons)
+			if (b.choice == choice)
+				return b.label;
+		return std::string();
+	};
+	CHECK(label_of(AskChoice::ye) == "передохнем [1]");
+	CHECK(label_of(AskChoice::yo) == "передохнём [2]");
+	CHECK(label_of(AskChoice::cancel) == "Прервать [Esc]");
+}
+
+TEST_CASE("панель вопросов: полоса не вылезает на маленьком окне", "[askpanel]")
+{
+	// Очень маленькое окно: полоса не помещается — раскладка обязана
+	// остаться видимой (плавающая панель), иначе спросить будет негде.
+	AskLayoutInput in = base_input();
+	in.bottom_bar = true;
+	in.word1 = "передохнем";
+	in.word2 = "передохнём";
+	in.client_w = 360.0F;
+	in.client_h = 240.0F;
+	in.context = "короткая фраза";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	CHECK(layout.h > 0.0F);
+	CHECK(layout.y >= 0.0F);
+	CHECK(layout.y + layout.h <= in.client_h);
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		CHECK(b.x >= 0.0F);
+		CHECK(b.x + b.w <= in.client_w);
+		CHECK(b.y + b.h <= in.client_h);
+	}
+}
+
+TEST_CASE("askpanel: байтовый диапазон слова для подсветки", "[askpanel]")
+{
+	// Кириллица в UTF-8 — по 2 байта на букву: смещения в кодовых точках
+	// и в байтах не совпадают, поэтому пересчёт должен быть точным.
+	const std::string line = "все ли всё равно";           // 16 символов
+	const AskWordRange first = ask_word_bytes(line, 0, 3); // «все»
+	REQUIRE(first.valid());
+	CHECK(first.from == 0);
+	CHECK(first.to == 6);
+	CHECK(line.substr(first.from, first.to - first.from) == "все");
+
+	const AskWordRange yo = ask_word_bytes(line, 7, 3); // «всё»
+	REQUIRE(yo.valid());
+	CHECK(line.substr(yo.from, yo.to - yo.from) == "всё");
+
+	// Границы: offset за концом строки и нулевая длина — пустой диапазон.
+	CHECK_FALSE(ask_word_bytes(line, line.size(), 5).valid());
+	CHECK_FALSE(ask_word_bytes(line, 3, 0).valid());
+	CHECK_FALSE(ask_word_bytes("", 0, 3).valid());
+
+	// Длина больше остатка строки подрезается, а не выходит за границы.
+	const AskWordRange tail = ask_word_bytes(line, 11, 100);
+	REQUIRE(tail.valid());
+	CHECK(tail.to <= line.size());
+	CHECK(line.substr(tail.from, tail.to - tail.from) == "равно");
+
+	// Суррогаты (4-байтовый UTF-8) считаются как один кодпоинт.
+	const std::string emoji = "\xF0\x9F\x98\x80 ё";
+	const AskWordRange e = ask_word_bytes(emoji, 2, 1);
+	REQUIRE(e.valid());
+	CHECK(emoji.substr(e.from, e.to - e.from) == "ё");
+}
+
+TEST_CASE("панель вопросов: подписи кнопок влезают целиком", "[askpanel]")
+{
+	// Текст кнопки рисуется тем же шрифтом, которым измерен: подпись
+	// «Пропустить [5]» не должна обрезаться по краям («1ропустить [5]»).
+	AskLayoutInput in = base_input();
+	in.bottom_bar = true;
+	in.word1 = "все";
+	in.word2 = "всё";
+	in.context = "Фама, знаю, мы все сошли с ума";
+	const AskLayout layout = layout_ask_panel(in, mono);
+	REQUIRE(layout.visible);
+	REQUIRE(layout.buttons.size() == 7);
+	for (const AskButtonBox& b : layout.buttons)
+	{
+		// Полная ширина подписи плюс поля по краям помещается в кнопку.
+		CHECK(mono(b.label) + in.char_width <= b.w + 0.5F);
+		CHECK(b.x >= 0.0F);
+		CHECK(b.x + b.w <= in.client_w + 0.5F);
+	}
 }

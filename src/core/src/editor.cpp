@@ -70,6 +70,16 @@ std::string encode_utf8(char32_t cp)
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
 }
 
+// Строка длиннее этого числа «клеток» не переносится: одна такая строка
+// (минифицированный файл) иначе заставляла бы пересчитывать десятки тысяч
+// рядов на каждую перерисовку.
+constexpr std::size_t kWrapGuardCells = 20000;
+
+// Предел числа строк документа для переноса: раскладка рядов пересчитывается
+// от изменённой строки до конца файла, поэтому на очень больших файлах
+// перенос выключается сам (иначе каждая правка — проход по всему тексту).
+constexpr std::size_t kWrapMaxLines = 50000;
+
 } // namespace
 
 Editor::Editor(std::shared_ptr<TextBuffer> buffer) : buf_(std::move(buffer))
@@ -80,9 +90,25 @@ Editor::Editor(std::shared_ptr<TextBuffer> buffer) : buf_(std::move(buffer))
 
 void Editor::set_metrics(const Metrics& m) noexcept
 {
+	// Рендерер сообщает метрики на каждой перерисовке; пересчёт ширины
+	// (проход по видимым строкам) нужен только при их реальном изменении.
+	const bool changed = m.char_width != metrics_.char_width || m.line_height != metrics_.line_height ||
+						 m.tab_cells != metrics_.tab_cells || m.padding_x != metrics_.padding_x;
 	metrics_ = m;
-	width_dirty_ = true;
-	ensure_caret_visible_impl();
+	if (changed)
+	{
+		width_dirty_ = true;
+		invalidate_rows(0);
+		if (wrap_)
+			wrap_cells_ = std::max<std::size_t>(
+				8, static_cast<std::size_t>(std::max(0.0F, view_w_) /
+											std::max(1.0F, metrics_.char_width)));
+	}
+	// Геометрия изменилась — подрезаем прокрутку под новый размер строки, но
+	// курсор в окно НЕ тянем: рендерер вызывает set_metrics на каждой
+	// перерисовке, и прежнее поведение отменяло прокрутку колесом и полосой.
+	scroll_y_ = std::min(scroll_y_, std::max(0.0F, content_height() - view_h_));
+	scroll_x_ = std::max(0.0F, scroll_x_);
 }
 
 std::size_t Editor::clamp_offset(std::size_t offset) const
@@ -233,6 +259,66 @@ void Editor::move_vertically(long lines, bool extend)
 	const std::size_t line = buf_->line_of(caret_);
 	const std::size_t byte_in_line = caret_ - buf_->line_start(line);
 
+	if (wrap_)
+	{
+		// При переносе «вверх/вниз» — по визуальным рядам, как в редакторах.
+		const std::size_t row = row_of_offset(caret_);
+		const std::vector<Segment> here = line_segments(line);
+		std::size_t index = 0;
+		const std::size_t base = static_cast<std::size_t>(row_prefix_[line]);
+		if (row >= base)
+			index = std::min(row - base, here.size() - 1);
+		Row self;
+		self.line = line;
+		self.from = here[index].from;
+		if (!want_cells_valid_)
+		{
+			want_cells_ = row_cells(self, byte_in_line);
+			want_cells_valid_ = true;
+		}
+		const std::size_t rows_total = row_count();
+		if (rows_total == 0)
+			return;
+		long target = static_cast<long>(row) + lines;
+		if (target < 0)
+			target = 0;
+		if (static_cast<std::size_t>(target) >= rows_total)
+			target = static_cast<long>(rows_total) - 1;
+		const std::size_t trow = static_cast<std::size_t>(target);
+		const std::size_t tline = line_of_row(trow);
+		const std::vector<Segment> tsegs = line_segments(tline);
+		const std::size_t tbase = static_cast<std::size_t>(row_prefix_[tline]);
+		const std::size_t tindex = std::min(trow - tbase, tsegs.size() - 1);
+		const Segment& seg = tsegs[tindex];
+		// Клетка → байт внутри ряда.
+		const std::string_view text = buf_->line_text(tline);
+		const std::size_t tab = static_cast<std::size_t>(std::max(1.0F, metrics_.tab_cells));
+		std::size_t cur = 0;
+		std::size_t i = seg.from;
+		while (i < seg.to && cur < want_cells_)
+		{
+			const unsigned char c = static_cast<unsigned char>(text[i]);
+			const std::size_t step = next_cp(text, i) - i;
+			if (c == '\t')
+			{
+				const std::size_t next_stop = cur + tab - (cur % tab);
+				if (next_stop > want_cells_)
+					break;
+				cur = next_stop;
+			}
+			else
+			{
+				++cur;
+			}
+			i += step;
+		}
+		caret_ = buf_->line_start(tline) + i;
+		if (!extend)
+			anchor_ = caret_;
+		ensure_caret_visible_impl();
+		return;
+	}
+
 	if (!want_cells_valid_)
 	{
 		want_cells_ = prefix_cells(line, byte_in_line);
@@ -301,18 +387,345 @@ void Editor::move_doc_end(bool extend)
 
 // ---- правки ----
 
+// ---- ряды переноса по словам ----
+
+namespace {
+
+// Сколько «клеток» в строке при данных метриках (для проверки предела).
+std::size_t line_cells(std::string_view text, float tab_cells)
+{
+	std::size_t cells = 0;
+	const std::size_t tab = static_cast<std::size_t>(std::max(1.0F, tab_cells));
+	for (std::size_t i = 0; i < text.size(); ++i)
+	{
+		const unsigned char c = static_cast<unsigned char>(text[i]);
+		if (is_cont(c))
+			continue;
+		if (c == '\t')
+			cells += tab - (cells % tab);
+		else
+			++cells;
+	}
+	return cells;
+}
+
+} // namespace
+
+void Editor::invalidate_rows(std::size_t from_line) const
+{
+	row_total_valid_ = false;
+	if (from_line == 0)
+	{
+		row_prefix_.clear();
+		row_prefix_lines_ = 0;
+		return;
+	}
+	if (row_prefix_lines_ > from_line)
+	{
+		row_prefix_lines_ = from_line;
+		row_prefix_.resize(from_line);
+	}
+}
+
+void Editor::set_word_wrap(bool on)
+{
+	if (wrap_ == on)
+		return;
+	wrap_ = on;
+	invalidate_rows(0);
+	row_prefix_.clear();
+	if (wrap_)
+	{
+		// Ширина ряда — из текущего вьюпорта (set_viewport мог быть раньше).
+		wrap_cells_ = std::max<std::size_t>(
+			8, static_cast<std::size_t>(std::max(0.0F, view_w_) /
+										std::max(1.0F, metrics_.char_width)));
+		scroll_x_ = 0.0F; // при переносе горизонтальной прокрутки нет
+	}
+	ensure_caret_visible_impl();
+}
+
+std::vector<Editor::Segment> Editor::line_segments(std::size_t line) const
+{
+	std::vector<Segment> out;
+	const std::string_view text = buf_->line_text(line);
+	out.push_back(Segment{ 0, text.size() });
+	if (!wrap_ || text.empty())
+		return out;
+
+	const std::size_t limit = std::max<std::size_t>(8, wrap_cells_);
+	// Слишком длинную строку не переносим: иначе одна строка на мегабайт
+	// заставит пересчитывать сотни тысяч рядов на каждую перерисовку.
+	if (line_cells(text, metrics_.tab_cells) > kWrapGuardCells)
+		return out;
+	// Очень большие файлы: раскладка рядов не строится (см. kWrapMaxLines).
+	if (buf_->line_count() > kWrapMaxLines)
+		return out;
+
+	out.clear();
+	const std::size_t tab = static_cast<std::size_t>(std::max(1.0F, metrics_.tab_cells));
+	std::size_t start = 0;
+	while (start < text.size())
+	{
+		std::size_t pos = start;
+		std::size_t cells = 0;
+		std::size_t fit = start;
+		while (pos < text.size())
+		{
+			const unsigned char c = static_cast<unsigned char>(text[pos]);
+			std::size_t w = 1;
+			if (c == '\t')
+				w = tab - (cells % tab);
+			if (cells + w > limit)
+				break;
+			cells += w;
+			pos = next_cp(text, pos);
+			fit = pos;
+		}
+		if (pos >= text.size())
+		{
+			out.push_back(Segment{ start, text.size() });
+			break;
+		}
+		// Перенос по словам: последний пробел в поместившейся части уходит
+		// в конец ряда (как в редакторах: пробел не «съедает» строку).
+		// Табуляция точкой переноса не считается — иначе ряд начинался бы
+		// с неё, а «a\t» уезжало бы в отдельный ряд.
+		std::size_t brk = std::string::npos;
+		for (std::size_t k = fit; k > start;)
+		{
+			const std::size_t prev = prev_cp(text, k);
+			if (static_cast<unsigned char>(text[prev]) == ' ')
+			{
+				brk = k;
+				break;
+			}
+			k = prev;
+		}
+		if (brk != std::string::npos && brk > start)
+		{
+			out.push_back(Segment{ start, brk });
+			start = brk;
+			continue;
+		}
+		if (fit == start)
+			fit = next_cp(text, start); // символ шире ряда — переносим его одного
+		out.push_back(Segment{ start, fit });
+		start = fit;
+	}
+	if (out.empty())
+		out.push_back(Segment{ 0, text.size() });
+	return out;
+}
+
+std::size_t Editor::rows_of_line(std::size_t line) const
+{
+	if (!wrap_)
+		return 1;
+	return line_segments(line).size();
+}
+
+void Editor::ensure_row_prefix(std::size_t line) const
+{
+	if (!wrap_)
+		return;
+	if (row_prefix_lines_ > row_prefix_.size())
+	{
+		row_prefix_.clear();
+		row_prefix_lines_ = 0;
+	}
+	if (row_prefix_.empty())
+	{
+		row_prefix_.push_back(0);
+		row_prefix_lines_ = 1;
+	}
+	const std::size_t lines = buf_->line_count();
+	const std::size_t want = std::min(line + 1, lines);
+	while (row_prefix_lines_ < want)
+	{
+		const std::size_t prev = row_prefix_lines_ - 1;
+		const std::uint32_t next =
+			row_prefix_[prev] + static_cast<std::uint32_t>(rows_of_line(prev));
+		row_prefix_.push_back(next);
+		++row_prefix_lines_;
+		row_total_valid_ = false;
+	}
+}
+
+std::size_t Editor::row_count() const
+{
+	if (!wrap_)
+		return buf_->line_count();
+	const std::size_t lines = buf_->line_count();
+	if (lines == 0)
+		return 0;
+	ensure_row_prefix(lines - 1);
+	if (!row_total_valid_)
+	{
+		row_total_ = row_prefix_[lines - 1] + rows_of_line(lines - 1);
+		row_total_valid_ = true;
+	}
+	return row_total_;
+}
+
+std::size_t Editor::line_of_row(std::size_t row) const
+{
+	if (!wrap_)
+		return std::min(row, buf_->line_count() - 1);
+	const std::size_t lines = buf_->line_count();
+	if (lines == 0)
+		return 0;
+	ensure_row_prefix(lines - 1);
+	// Первая строка, начинающаяся после row, минус одна.
+	std::size_t lo = 0;
+	std::size_t hi = lines - 1;
+	while (lo < hi)
+	{
+		const std::size_t mid = lo + (hi - lo + 1) / 2;
+		if (static_cast<std::size_t>(row_prefix_[mid]) <= row)
+			lo = mid;
+		else
+			hi = mid - 1;
+	}
+	return lo;
+}
+
+long Editor::scroll_delta_to_reveal_row(std::size_t row, bool at_bottom, int margin) const
+{
+	const auto first = static_cast<long long>(first_visible_row());
+	const auto count = std::max<long long>(1, static_cast<long long>(visible_row_count()));
+	const auto target = static_cast<long long>(row);
+	const auto below = static_cast<long long>(std::max(0, margin));
+	long long delta = 0;
+	if (at_bottom)
+	{
+		// Ряд ставим так, чтобы под ним осталось `below` рядов: он оказывается
+		// над панелью вопросов, а не за ней.
+		delta = target + below - (first + count - 1);
+	}
+	else if (target < first)
+		delta = target - first;
+	else if (target >= first + count)
+		delta = target - (first + count) + 1;
+	return static_cast<long>(delta);
+}
+
+std::size_t Editor::row_of_offset(std::size_t offset) const
+{
+	const std::size_t line = buf_->line_of(offset);
+	if (!wrap_)
+		return line;
+	ensure_row_prefix(line);
+	const std::size_t byte_in_line = offset - buf_->line_start(line);
+	const std::vector<Segment> segs = line_segments(line);
+	std::size_t index = 0;
+	for (std::size_t i = 0; i < segs.size(); ++i)
+	{
+		if (byte_in_line >= segs[i].from && byte_in_line < segs[i].to)
+		{
+			index = i;
+			break;
+		}
+		index = i; // курсор в конце строки — последний ряд
+	}
+	return static_cast<std::size_t>(row_prefix_[line]) + index;
+}
+
+std::size_t Editor::row_cells(const Row& row, std::size_t byte_in_line) const
+{
+	const std::string_view text = buf_->line_text(row.line);
+	const std::size_t from = std::min(row.from, text.size());
+	const std::size_t to = std::min(std::max(byte_in_line, from), text.size());
+	const std::size_t tab = static_cast<std::size_t>(std::max(1.0F, metrics_.tab_cells));
+	std::size_t cells = 0;
+	std::size_t i = from;
+	while (i < to)
+	{
+		const unsigned char c = static_cast<unsigned char>(text[i]);
+		if (c == '\t')
+			cells += tab - (cells % tab);
+		else
+			++cells;
+		i = next_cp(text, i);
+	}
+	return cells;
+}
+
+float Editor::row_width(const Row& row, std::size_t byte_in_line) const
+{
+	return static_cast<float>(row_cells(row, byte_in_line)) * std::max(1.0F, metrics_.char_width);
+}
+
+std::size_t Editor::first_visible_row() const
+{
+	const float lh = std::max(1.0F, metrics_.line_height);
+	const std::size_t rows_total = wrap_ ? row_count() : buf_->line_count();
+	if (rows_total == 0)
+		return 0;
+	const std::size_t row = static_cast<std::size_t>(std::max(0.0F, scroll_y_) / lh);
+	return std::min(row, rows_total - 1);
+}
+
+std::size_t Editor::visible_row_count() const
+{
+	const float lh = std::max(1.0F, metrics_.line_height);
+	const std::size_t rows = static_cast<std::size_t>(std::ceil(view_h_ / lh)) + 1;
+	const std::size_t total = wrap_ ? row_count() : buf_->line_count();
+	const std::size_t first = first_visible_row();
+	return total > first ? std::min(rows, total - first) : 1;
+}
+
+std::vector<Editor::Row> Editor::visible_rows() const
+{
+	std::vector<Row> out;
+	const std::size_t lines = buf_->line_count();
+	if (lines == 0)
+		return out;
+	const float lh = std::max(1.0F, metrics_.line_height);
+	const std::size_t rows_total = row_count();
+	const std::size_t first_row =
+		std::min(static_cast<std::size_t>(std::max(0.0F, scroll_y_) / lh),
+				 rows_total > 0 ? rows_total - 1 : 0);
+	std::size_t row = first_row;
+	const std::size_t rows_to_cover = static_cast<std::size_t>(std::ceil(view_h_ / lh)) + 2;
+	while (row < rows_total && row < first_row + rows_to_cover)
+	{
+		const std::size_t line = line_of_row(row);
+		const std::vector<Segment> segs = line_segments(line);
+		// Без переноса ряд совпадает со строкой, и таблицы row_prefix_ нет
+		// (она строится только в режиме переноса) — берём номер строки.
+		const std::size_t base =
+			wrap_ ? static_cast<std::size_t>(row_prefix_[line]) : line;
+		for (std::size_t i = row - base; i < segs.size() && row < rows_total; ++i, ++row)
+		{
+			Row r;
+			r.line = line;
+			r.from = segs[i].from;
+			r.to = segs[i].to;
+			r.top = static_cast<float>(row) * lh;
+			r.first_of_line = i == 0;
+			r.last_of_line = i + 1 >= segs.size();
+			out.push_back(r);
+		}
+		if (segs.empty())
+			++row;
+	}
+	return out;
+}
+
 void Editor::after_edit(std::size_t edited)
 {
 	anchor_ = caret_;
+	if (wrap_)
+		invalidate_rows(buf_->line_of(edited));
 	want_cells_valid_ = false;
-	if (!width_dirty_)
-	{
-		const std::size_t line = buf_->line_of(edited);
-		const float w = static_cast<float>(prefix_cells(line, buf_->line_text(line).size())) *
-						metrics_.char_width;
-		if (w > cached_text_width_)
-			cached_text_width_ = w;
-	}
+	// Кэш ширины — максимум по строкам, и после правки он может только
+	// уменьшиться: удалили длинную строку, короткую вставили вместо неё.
+	// Раньше кэш спускался только в set_metrics, и после удаления самой
+	// длинной строки горизонтальная полоса прокрутки висели в окне
+	// без текста. Пересчитываем при первом обращении — это проход по
+	// первому kWidthScanLines строкам, а не по всему документу.
+	width_dirty_ = true;
 	ensure_caret_visible_impl();
 }
 
@@ -473,20 +886,98 @@ std::size_t Editor::cells_to_byte(std::size_t line, std::size_t cells) const
 float Editor::caret_x() const
 {
 	const std::size_t line = buf_->line_of(caret_);
-	return prefix_width(line, caret_ - buf_->line_start(line));
+	if (!wrap_)
+		return prefix_width(line, caret_ - buf_->line_start(line));
+	const std::size_t byte_in_line = caret_ - buf_->line_start(line);
+	const std::vector<Segment> segs = line_segments(line);
+	const std::size_t index = [&]
+	{
+		for (std::size_t i = 0; i < segs.size(); ++i)
+		{
+			if (byte_in_line >= segs[i].from && byte_in_line < segs[i].to)
+				return i;
+		}
+		return segs.size() - 1;
+	}();
+	Row row;
+	row.line = line;
+	row.from = segs[index].from;
+	row.to = segs[index].to;
+	return row_width(row, byte_in_line);
 }
 
-float Editor::caret_y() const { return line_top(buf_->line_of(caret_)); }
+float Editor::caret_y() const
+{
+	if (!wrap_)
+		return line_top(buf_->line_of(caret_));
+	return static_cast<float>(row_of_offset(caret_)) * std::max(1.0F, metrics_.line_height);
+}
 
 float Editor::line_top(std::size_t line) const
 {
-	return static_cast<float>(line) * metrics_.line_height;
+	if (!wrap_)
+		return static_cast<float>(line) * metrics_.line_height;
+	ensure_row_prefix(line);
+	const float row = line < row_prefix_.size() ? static_cast<float>(row_prefix_[line])
+												: static_cast<float>(line);
+	return row * ::std::max(1.0F, metrics_.line_height);
+}
+
+std::size_t Editor::offset_at_client(float screen_x, float screen_y, float padding_x) const
+{
+	return offset_at(screen_x - padding_x + scroll_x_, screen_y + scroll_y_);
 }
 
 std::size_t Editor::offset_at(float x, float y) const
 {
 	if (buf_->line_count() == 0)
 		return 0;
+	if (wrap_)
+	{
+		const float lh = std::max(1.0F, metrics_.line_height);
+		const std::size_t rows_total = row_count();
+		if (rows_total == 0)
+			return 0;
+		long row = static_cast<long>(y / lh);
+		if (row < 0)
+			row = 0;
+		if (static_cast<std::size_t>(row) >= rows_total)
+			row = static_cast<long>(rows_total) - 1;
+		const std::size_t line = line_of_row(static_cast<std::size_t>(row));
+		const std::vector<Segment> segs = line_segments(line);
+		const std::size_t base = static_cast<std::size_t>(row_prefix_[line]);
+		const std::size_t index =
+			std::min(static_cast<std::size_t>(row) - base, segs.size() - 1);
+		const Segment& seg = segs[index];
+		// Клетки считаем внутри ряда: табуляции отсчитываются от его начала.
+		const float cw = std::max(1.0F, metrics_.char_width);
+		const long cells = static_cast<long>(x / cw + 0.5F);
+		const std::size_t want = cells > 0 ? static_cast<std::size_t>(cells) : 0;
+		const std::string_view text = buf_->line_text(line);
+		const std::size_t tab = static_cast<std::size_t>(std::max(1.0F, metrics_.tab_cells));
+		std::size_t cur = 0;
+		std::size_t i = seg.from;
+		while (i < seg.to)
+		{
+			if (cur >= want)
+				break;
+			const unsigned char c = static_cast<unsigned char>(text[i]);
+			const std::size_t step = next_cp(text, i) - i;
+			if (c == '\t')
+			{
+				const std::size_t next_stop = cur + tab - (cur % tab);
+				if (next_stop > want)
+					break;
+				cur = next_stop;
+			}
+			else
+			{
+				++cur;
+			}
+			i += step;
+		}
+		return buf_->line_start(line) + i;
+	}
 	const float lh = std::max(1.0F, metrics_.line_height);
 	long line = static_cast<long>(y / lh);
 	if (line < 0)
@@ -505,10 +996,27 @@ std::size_t Editor::offset_at(float x, float y) const
 
 void Editor::set_viewport(float width, float height)
 {
+	const float old_cells = static_cast<float>(wrap_cells_);
 	view_w_ = std::max(0.0F, width);
 	view_h_ = std::max(0.0F, height);
-	// Окно могло появиться/измениться — держим курсор в поле зрения.
-	ensure_caret_visible_impl();
+	if (wrap_)
+	{
+		// Ширина окна задаёт, сколько «клеток» влезает в ряд.
+		wrap_cells_ = std::max<std::size_t>(
+			8, static_cast<std::size_t>(std::max(0.0F, view_w_) /
+										std::max(1.0F, metrics_.char_width)));
+		if (static_cast<float>(wrap_cells_) != old_cells)
+		{
+			invalidate_rows(0);
+			row_prefix_.clear();
+		}
+		scroll_x_ = 0.0F;
+	}
+	// Только подрезка прокрутки под новый размер окна (см. set_metrics):
+	// возврат к курсору здесь отменял бы прокрутку колесом и полосой.
+	scroll_y_ = std::min(scroll_y_, std::max(0.0F, content_height() - view_h_));
+	const float max_x = std::max(0.0F, text_width() - view_w_ + metrics_.char_width);
+	scroll_x_ = std::min(scroll_x_, std::max(0.0F, max_x));
 }
 
 std::size_t Editor::clamp_scroll_y(float y) const
@@ -523,6 +1031,13 @@ std::size_t Editor::clamp_scroll_y(float y) const
 
 void Editor::scroll_by(float dx, float dy)
 {
+	if (wrap_)
+	{
+		scroll_x_ = 0.0F;
+		const float max_y = std::max(0.0F, content_height() - view_h_);
+		scroll_y_ = std::max(0.0F, std::min(scroll_y_ + dy, max_y));
+		return;
+	}
 	const float max_x = std::max(0.0F, text_width() - view_w_ + metrics_.char_width);
 	scroll_x_ = std::max(0.0F, std::min(scroll_x_ + dx, max_x));
 	const float max_y = std::max(0.0F, content_height() - view_h_);
@@ -532,6 +1047,21 @@ void Editor::scroll_by(float dx, float dy)
 void Editor::scroll_lines(long lines)
 {
 	scroll_by(0.0F, static_cast<float>(lines) * metrics_.line_height);
+}
+
+void Editor::set_scroll_y(float y)
+{
+	scroll_y_ = std::max(0.0F, std::min(y, std::max(0.0F, content_height() - view_h_)));
+}
+
+void Editor::set_scroll_x(float x)
+{
+	if (wrap_)
+	{
+		scroll_x_ = 0.0F;
+		return;
+	}
+	scroll_x_ = std::max(0.0F, std::min(x, std::max(0.0F, text_width() - view_w_ + metrics_.char_width)));
 }
 
 void Editor::ensure_caret_visible_impl()
@@ -561,19 +1091,35 @@ std::size_t Editor::first_visible_line() const
 {
 	const float lh = std::max(1.0F, metrics_.line_height);
 	const std::size_t line = static_cast<std::size_t>(scroll_y_ / lh);
-	return std::min(line, buf_->line_count() - 1);
+	if (!wrap_)
+		return std::min(line, buf_->line_count() - 1);
+	const std::size_t rows_total = row_count();
+	if (rows_total == 0)
+		return 0;
+	return line_of_row(std::min(line, rows_total - 1));
 }
 
 std::size_t Editor::visible_line_count() const
 {
 	const float lh = std::max(1.0F, metrics_.line_height);
 	const std::size_t lines = static_cast<std::size_t>(std::ceil(view_h_ / lh)) + 1;
-	return std::min(lines, buf_->line_count() - first_visible_line());
+	const std::size_t first = first_visible_line();
+	if (!wrap_)
+		return std::min(lines, buf_->line_count() - first);
+	// Сколько логических строк покрывают видимые ряды.
+	const std::size_t rows_total = row_count();
+	const std::size_t first_row =
+		std::min(static_cast<std::size_t>(std::max(0.0F, scroll_y_) / lh),
+				 rows_total > 0 ? rows_total - 1 : 0);
+	const std::size_t last_row = std::min(first_row + lines, rows_total > 0 ? rows_total - 1 : 0);
+	const std::size_t last_line = line_of_row(last_row);
+	return last_line + 1 > first ? last_line + 1 - first : 1;
 }
 
 float Editor::content_height() const
 {
-	return static_cast<float>(buf_->line_count()) * std::max(1.0F, metrics_.line_height);
+	const std::size_t rows = wrap_ ? row_count() : buf_->line_count();
+	return static_cast<float>(rows) * std::max(1.0F, metrics_.line_height);
 }
 
 namespace {
@@ -583,6 +1129,8 @@ constexpr std::size_t kWidthScanLines = 5000;
 
 float Editor::text_width() const
 {
+	if (wrap_)
+		return view_w_; // при переносе горизонтальной прокрутки нет
 	if (width_dirty_)
 	{
 		float best = 0.0F;

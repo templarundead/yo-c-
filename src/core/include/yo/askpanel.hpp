@@ -25,6 +25,20 @@ struct AskTexts
 
 [[nodiscard]] AskTexts make_ask_texts(const AskRequest& req);
 
+// Байтовый диапазон слова, о котором спрашивают, внутри строки UTF-8.
+// offset/length в AskRequest считаются в кодовых точках (UString), а
+// подсветке в документе нужны байты — раньше это пересчитывалось в GUI, и
+// ошибка в пересчёте выглядела как «подсветка уехала/пропала».
+struct AskWordRange
+{
+	std::size_t from = 0; // смещение от начала строки, байты
+	std::size_t to = 0;
+	[[nodiscard]] bool valid() const noexcept { return to > from; }
+};
+
+[[nodiscard]] AskWordRange ask_word_bytes(std::string_view line_utf8, std::size_t offset_cp,
+										  std::size_t length_cp);
+
 // Что можно ответить (совпадает с AskAnswer, но без служебных значений).
 enum class AskChoice : std::uint8_t
 {
@@ -49,9 +63,19 @@ struct AskButtonBox
 	float h = 0.0F;
 };
 
+// Что за строка в панели: заголовок, кусок предложения или строка вариантов.
+enum class AskRowKind : std::uint8_t
+{
+	title,
+	context,
+	variant,
+};
+
 struct AskLayout
 {
 	bool visible = false;
+	// Панель во всю ширину у нижнего края (как AskPanel оригинала).
+	bool bottom = false;
 	float x = 0.0F; // панель, клиентские пиксели
 	float y = 0.0F;
 	float w = 0.0F;
@@ -62,6 +86,7 @@ struct AskLayout
 		std::string text;
 		float y = 0.0F;
 		float h = 0.0F;
+		AskRowKind kind = AskRowKind::context;
 	};
 	std::vector<Row> rows; // варианты, причина, контекст
 	std::vector<AskButtonBox> buttons;
@@ -81,7 +106,12 @@ struct AskLayoutInput
 	float max_chars = 96.0F; // предел ширины панели в символах
 	std::string variants;	 // из make_ask_texts
 	std::string reason;
-	std::string context; // строка документа (может быть пустой)
+	std::string context; // предложение с обрабатываемым словом (может быть пустым)
+	// Режим «полоса во всю ширину снизу», как AskPanel оригинала: заголовок
+	// по центру, кнопки в две колонки.
+	bool bottom_bar = false;
+	std::string word1; // вариант без ё — подписывает кнопку «1»
+	std::string word2; // вариант с ё — подписывает кнопку «2»
 };
 
 // measure — ширина строки в пикселях шрифтом интерфейса. Если не задана,

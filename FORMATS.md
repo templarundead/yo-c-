@@ -202,6 +202,23 @@ Delphi `string` (AnsiString) — байты CP1251, индексы 1-based.
 
 ## 3. Файл инициализации `yo.ini`
 
+> **Реализовано в yo-c-** (`yo::Ini` + `App::load_settings/save_settings`):
+> читаются **все** ключи таблицы ниже — `[Yo] AlwaysAsk`, `Mark`,
+> `FastScroll`, `CheckYo`, `NoVarOnly`, `VarOnly`, `WordWrap`, `ProposeLast`,
+> `FBFormat`, `AutoUnicode`, `RegExprs`, `RecallLastFile`, `ToConfirmClose`,
+> `ToConfirmAbbr`, `ToConfirmEllipsis`, `ToConfirmCap`, `LinesBelow`,
+> `Dictionary`, `RegExprDictionary`, `FontName`/`FontSize`/`FontCharset`
+> (шрифт применяется; диалог выбора — только моноширинные),
+> `ButtonHotKeys`, `WordsBufferLength`, `TextDirectory`, геометрия окна;
+> `[Colors] ColorMark`, `ColorBackMark`; `[Internal] UTF8Warning`,
+> `UTFLength`; `[ToolBar] ShowToolBar`; `[Files] Name1..9`, `LastFileN`.
+> Умолчания совпадают с `ReadIni`. Наши расширения: `[Yo] SilentYofy`
+> («без вопросов») и `[Yo] Maximized` (не в оригинале). `[Colors]` хранит
+> `COLORREF` (`TColor`), как оригинал; индексы палитры 0..5, которые писала
+> предыдущая сборка yo-c-, при чтении понимаются как палитра.
+> Неизвестные ключи при перезаписи сохраняются (файл читается перед
+> записью), как это делает `TIniFile`.
+
 - Расположение: `ProgramDirectory\yo.ini` (каталог exe, не AppData;
   `FullIniFileName = ProgramDirectory + '\' + 'yo.ini'`;
   `SetCurrentDir(ProgramDirectory)` при старте). Формат — стандартный

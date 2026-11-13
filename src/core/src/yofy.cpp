@@ -351,6 +351,9 @@ UString Yoficator::select_word(const UString& cword, [[maybe_unused]] std::size_
 			(focus_n != 0 && opts_.propose_last && !wrong_yo) ? (focus_n == 1)
 															  : (!cyr::is_yo_in(cword) || wrong_yo);
 		req.propose_last = opts_.propose_last;
+		req.line = line_no_;
+		req.offset = offset;
+		req.length = cword.size();
 
 		++stats_.ask_prompts;
 		AskAnswer answer = ask_ ? ask_(req) : AskAnswer::cancel;
@@ -364,7 +367,15 @@ UString Yoficator::select_word(const UString& cword, [[maybe_unused]] std::size_
 		was_ask_ = true;
 		to_make_undo_ = answer == AskAnswer::undo;
 		if (to_make_undo_)
-			answer = AskAnswer::cancel;
+		{
+			// «Откат» — отмена последней сделанной замены, а не всего прохода:
+			// текущее слово не меняем и продолжаем разбор (адаптер снимет
+			// ровно одно изменение из уже накопленных).
+			++undo_requests_;
+			if (undo_hook_)
+				undo_hook_();
+			answer = AskAnswer::skip;
+		}
 		switch (answer)
 		{
 		case AskAnswer::cancel:
@@ -438,8 +449,11 @@ void Yoficator::change_letter(UString& text, std::size_t offset, UStringView old
 	{
 		if (old_word[k] != new_word[k])
 		{
+			const Change change{ k0, old_word[k], new_word[k], was_ask };
 			if (changes != nullptr)
-				changes->push_back({ k0, old_word[k], new_word[k], was_ask });
+				changes->push_back(change);
+			if (change_hook_)
+				change_hook_(change);
 			if (k0 < text.size())
 				text[k0] = new_word[k];
 		}

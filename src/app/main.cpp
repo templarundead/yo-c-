@@ -1,10 +1,13 @@
 // Точка входа GUI: DPI-осведомлённость, COM, окно.
 #include "app.hpp"
 
+#include <commctrl.h>
 #include <windows.h>
 
 #include <shellapi.h>
 
+#include <cstdint>
+#include <iterator>
 #include <string>
 
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
@@ -27,6 +30,50 @@ void enable_dpi_awareness()
 	SetProcessDPIAware();
 }
 
+// Падение: пишем в %TEMP%\yo-crash.log код исключения, адрес и стек
+// (смещения от базы модуля — по ним видно функцию даже без PDB), затем
+// отдаём исключение системе как обычно. Без этого «белое окно и закрылось»
+// нечем разбирать.
+LONG WINAPI yo_crash_filter(EXCEPTION_POINTERS* info)
+{
+	wchar_t temp[32768] = L"";
+	if (GetTempPathW(static_cast<DWORD>(std::size(temp)), temp) == 0)
+		return EXCEPTION_CONTINUE_SEARCH;
+	const std::wstring path = std::wstring(temp) + L"yo-crash.log";
+	HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+							  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file != INVALID_HANDLE_VALUE)
+	{
+		const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+		char text[1024] = "";
+		const auto record = info != nullptr ? info->ExceptionRecord : nullptr;
+		const unsigned long code =
+			record != nullptr ? static_cast<unsigned long>(record->ExceptionCode) : 0UL;
+		const auto address = record != nullptr ? reinterpret_cast<std::uintptr_t>(record->ExceptionAddress)
+											 : 0U;
+			// Адреса — смещениями от базы exe: так они сопоставимы со сборкой.
+		int n = wsprintfA(text, "исключение 0x%08lx, адрес +0x%08llx (база 0x%08llx)\r\n"
+						 "стек:\r\n",
+						  code, static_cast<unsigned long long>(address - base),
+						  static_cast<unsigned long long>(base));
+			if (n > 0)
+				WriteFile(file, text, static_cast<DWORD>(n), nullptr, nullptr);
+		void* frames[48] = {};
+		const USHORT depth = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames,
+											   nullptr);
+		for (USHORT i = 0; i < depth; ++i)
+		{
+			const auto off = reinterpret_cast<std::uintptr_t>(frames[i]) - base;
+			n = wsprintfA(text, "  #%u +0x%08llx\r\n", static_cast<unsigned>(i),
+						  static_cast<unsigned long long>(off));
+			if (n > 0)
+				WriteFile(file, text, static_cast<DWORD>(n), nullptr, nullptr);
+		}
+		CloseHandle(file);
+	}
+	return EXCEPTION_CONTINUE_SEARCH; // обычная обработка (WER) остаётся
+}
+
 std::wstring first_argument()
 {
 	int argc = 0;
@@ -45,6 +92,13 @@ std::wstring first_argument()
 int WINAPI WinMain(HINSTANCE hinst, HINSTANCE, LPSTR, int show)
 {
 	enable_dpi_awareness();
+	SetUnhandledExceptionFilter(&yo_crash_filter);
+	// Common Controls 6 из манифеста: системные полосы прокрутки и меню
+	// рисуются в оформлении Windows, а не в классическом стиле.
+	INITCOMMONCONTROLSEX icc{};
+	icc.dwSize = sizeof(icc);
+	icc.dwICC = ICC_STANDARD_CLASSES | ICC_BAR_CLASSES;
+	InitCommonControlsEx(&icc);
 	if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
 		return 1;
 

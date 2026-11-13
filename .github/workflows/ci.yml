@@ -22,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # lld обязателен: с clang биткод LTO линкует только линковщик LLVM.
       - name: LLVM 20 и ninja
         run: |
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
@@ -44,11 +45,51 @@ jobs:
       - name: yo-cli собрался
         run: test -x build/linux-clang-debug/src/cli/yo-cli
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: yo-cli-linux-x86_64
           path: build/linux-clang-debug/src/cli/yo-cli
           if-no-files-found: error
+
+  linux-release:
+    name: Linux / clang 20, релизный пресет (LTO + strip)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # lld обязателен: биткод LTO у clang линкует только линковщик LLVM,
+      # а GNU ld его не понимает.
+      - name: LLVM 20, lld и ninja
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
+          sudo apt-get install -y ninja-build lld-20
+
+      - uses: actions/cache@v6
+        with:
+          path: .deps
+          key: deps-linux-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
+
+      # Ровно тот пресет, которым собираются релизные артефакты (release.yml).
+      # Раньше он в CI не проверялся, и в поставку уезжал ASan-бинарник.
+      - name: Настройка (Release, LTO, strip)
+        run: cmake --preset linux-clang-release -DCMAKE_CXX_COMPILER=clang++-20
+
+      - name: Сборка
+        run: cmake --build --preset linux-clang-release
+
+      - name: Тесты на релизной сборке
+        run: ctest --test-dir build/linux-clang-release --output-on-failure
+
+      - name: Без санитайзеров
+        run: |
+          set -euo pipefail
+          bin=build/linux-clang-release/src/cli/yo-cli
+          test -x "$bin"
+          if nm -a "$bin" | grep -q '__asan_init'; then
+            echo "::error::релизный бинарник собран с ASan (YO_SANITIZERS)"
+            exit 1
+          fi
+          ls -l "$bin"
 
   windows-msvc:
     name: Windows / MSVC, тесты
@@ -56,19 +97,64 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Окружение MSVC (Windows SDK, CRT)
+        # Без этого cl.exe не в PATH, и CMake выбирает свалившийся рядом
+        # MinGW-g++ — сборка «в MSVC-джобе» падала на collect2.exe.
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
       - uses: actions/cache@v6
         with:
           path: .deps
           key: deps-windows-msvc-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
 
       - name: Настройка (MSVC Release + тесты)
+        # /W4 + /WX: единственные предупреждения (/W4) были C4996 на getenv и
+        # fopen — они устранены (yo::env_var, std::ofstream), так что сборка
+        # идёт со строгим режимом.
         run: cmake --preset win-msvc-release -DYO_BUILD_TESTS=ON
 
       - name: Сборка
-        run: cmake --build --preset win-msvc-release
+        shell: pwsh
+        # Ошибки дублируем аннотациями: они доступны через API даже там, где
+        # журнал джобы скачать нельзя.
+        run: |
+          cmake --build --preset win-msvc-release 2>&1 | Tee-Object -FilePath build.log
+          # Предупреждения собираем сюда же: журнал джобы недоступен, а
+          # аннотации читаются через API. Уникальные строки, до 50 штук.
+          $warn = Get-Content build.log |
+            Select-String -Pattern 'warning C\d+|warning: ' |
+            ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique
+          Write-Host "::warning::предупреждений всего (уникальных): $($warn.Count)"
+          $warn | Select-Object -First 50 | ForEach-Object { Write-Host "::warning::$_" }
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log |
+              Select-String -Pattern 'error C\d|error LNK\d|fatal error|undefined reference|ld returned|error:' |
+              Select-Object -First 12 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Тесты
-        run: ctest --test-dir build/win-msvc-release --output-on-failure
+        shell: pwsh
+        run: |
+          $count = (ctest --test-dir build/win-msvc-release -N 2>&1 |
+            Select-String -Pattern 'Total Tests: (\d+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value })
+          Write-Host "::notice::ctest зарегистрировал кейсов: $count"
+          ctest --test-dir build/win-msvc-release --output-on-failure 2>&1 |
+            Tee-Object -FilePath tests.log
+          if ($LASTEXITCODE -ne 0) {
+            # Диагностика: прямой запуск бинарника, его вывод читаемее ctest.
+            .\build\win-msvc-release\tests\yo_tests.exe 2>&1 |
+              Tee-Object -FilePath direct.log
+            Get-Content direct.log |
+              Select-String -Pattern 'with expansion|REQUIRE|CHECK|FAILED|Assertion|exception|No test cases' |
+              Select-Object -First 25 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
   windows-clang-cl:
     name: Windows / clang-cl, артефакты
@@ -82,15 +168,30 @@ jobs:
           key: deps-windows-clang-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
 
       - name: Окружение MSVC (Windows SDK, CRT)
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
 
       - name: Настройка
+        # clang-cl в MSVC-режиме получает /W4 + /WX (см. win-msvc выше).
         run: cmake --preset win-clang-release
 
       - name: Сборка GUI и CLI
-        run: cmake --build --preset win-clang-release
+        shell: pwsh
+        run: |
+          cmake --build --preset win-clang-release 2>&1 | Tee-Object -FilePath build.log
+          $warn = Get-Content build.log |
+            Select-String -Pattern 'warning C\d+|warning: ' |
+            ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique
+          Write-Host "::warning::предупреждений всего (уникальных): $($warn.Count)"
+          $warn | Select-Object -First 50 | ForEach-Object { Write-Host "::warning::$_" }
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log |
+              Select-String -Pattern 'error C\d|error LNK\d|fatal error|undefined reference|ld returned|error:' |
+              Select-Object -First 12 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Комплект
         shell: pwsh
@@ -101,12 +202,20 @@ jobs:
           # Словари лежат рядом с exe — оттуда их ищет ensure_yoficator().
           Copy-Item tests/data/yox.dat, tests/data/yo_regexpr.dat dist/
           Copy-Item README.md, NOTICE, LICENSE dist/
-          Compress-Archive -Path dist/* -DestinationPath yo-windows-x64.zip -Force
+          # Архив здесь НЕ делаем: upload-artifact упаковывает всё сам, и
+          # «zip в zip» (скачал архив, распаковал — снова архив) не нужен.
 
-      - uses: actions/upload-artifact@v4
+      - name: Содержимое комплекта
+        shell: pwsh
+        run: |
+          # Что уходит в артефакт — видно в журнале, без скачивания.
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v7
         with:
           name: yo-windows-x64
-          path: yo-windows-x64.zip
+          # Каталог, а не файл: в артефакте окажутся сами exe и словари.
+          path: dist/
           if-no-files-found: error
 
   windows-cross:
@@ -115,8 +224,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Зависимости тянем из кэша, как в остальных джобах: иначе каждый
+      # прогон заново качает abseil и RE2.
+      - uses: actions/cache@v6
+        with:
+          path: .deps
+          key: deps-windows-zig-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
+
       - name: zig и ninja
-        run: pip install --break-system-packages ziglang ninja
+        run: |
+          python3 -m pip install --break-system-packages ziglang
+          # Каталог с исполняемым файлом zig ищем через сам пакет: pip может
+          # положить его и в site-packages, и в ~/.local/bin.
+          ZIG_DIR=$(python3 -c "import os, ziglang; print(os.path.dirname(ziglang.__file__))")
+          echo "$ZIG_DIR" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          command -v ninja >/dev/null || sudo apt-get install -y ninja-build
+
+      - name: Версии инструментов
+        run: |
+          zig version
+          ninja --version
+          cmake --version
 
       - name: Настройка
         run: >
@@ -133,10 +262,6 @@ jobs:
           file build/zig-win/src/app/yo-gui.exe | tee /dev/stderr | grep -q 'PE32+'
           file build/zig-win/src/cli/yo-cli.exe | grep -q 'PE32+'
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: yo-windows-x64-zig
-          path: |
-            build/zig-win/src/app/yo-gui.exe
-            build/zig-win/src/cli/yo-cli.exe
-          if-no-files-found: error
+      # Артефакт здесь не публикуем: поставочная сборка — clang-cl выше,
+      # а эта джоба проверяет, что Windows-код (Win32/Direct2D/DirectWrite)
+      # компилируется без Windows-SDK и с другим CRT/ABI.
