@@ -1282,6 +1282,47 @@ void App::update_scrollbars(bool redraw)
 	const float area_h = renderer_.text_area_height();
 	const bool need_h = !ed_->word_wrap() && ed_->text_width() > area_w + 0.5F;
 	const bool need_v = ed_->content_height() > area_h + 0.5F;
+
+	SCROLLINFO sv{};
+	sv.cbSize = sizeof(sv);
+	sv.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+	sv.nMin = 0;
+	// При переносе по словам полоса меряется визуальными рядами, а не
+	// логическими строками (иначе бегунок «прыгал» бы).
+	const std::size_t total_rows = ed_->word_wrap() ? ed_->row_count() : buf_->line_count();
+	sv.nMax = static_cast<int>(std::max<std::size_t>(1, total_rows) - 1);
+	// Размер «страницы» в рядах — столько ЦЕЛЫХ рядов влезает в видимую
+	// высоту. Раньше использовался visible_row_count() (ceil + 1 запасная
+	// строка для отрисовки): на один ряд больше, чем реально помещается,
+	// поэтому бегунок не доезжал до нижнего края — последняя строка
+	// оставалась подрезанной.
+	const float lh = std::max(1.0F, ed_->metrics().line_height);
+	sv.nPage = static_cast<UINT>(std::max<std::size_t>(
+		1, static_cast<std::size_t>(std::floor(ed_->viewport_height() / lh))));
+	// Позиция — ближайший ряд, а не усечение: дробная часть scroll_y
+	// (появляется после ensure_caret_visible или SB_BOTTOM) не должна
+	// «зависать» и мешать бегунку доезжать до края.
+	sv.nPos = static_cast<int>(std::lround(ed_->scroll_y() / lh));
+
+	const float cw = std::max(1.0F, renderer_.char_width());
+	SCROLLINFO sh{};
+	sh.cbSize = sizeof(sh);
+	sh.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+	sh.nMin = 0;
+	// ceil: широкий документ с дробным числом символов — бегунок должен
+	// доезжать до правого края (полоса в символах, как и раньше).
+	sh.nMax = static_cast<int>(std::max(1.0F, std::ceil(ed_->text_width() / cw)));
+	sh.nPage = static_cast<UINT>(std::max<std::size_t>(
+		1, static_cast<std::size_t>(std::floor(renderer_.text_area_width() / cw))));
+	sh.nPos = static_cast<int>(std::lround(ed_->scroll_x() / cw));
+
+	// Сначала диапазон/страница/позиционирование, потом показ/скрытие:
+	// SetScrollInfo может «оживить» полосу, если диапазон уже прокрутимо,
+	// а ShowScrollBar(FALSE) после — прячет её надёжно. Наоборот (как
+	// раньше: ShowScrollBar, потом SetScrollInfo) — полоса могла остаться
+	// видимой в пустом окне.
+	SetScrollInfo(hwnd_, SB_VERT, &sv, redraw ? TRUE : FALSE);
+	SetScrollInfo(hwnd_, SB_HORZ, &sh, redraw ? TRUE : FALSE);
 	if (need_h != hscroll_shown_)
 	{
 		hscroll_shown_ = need_h;
@@ -1292,28 +1333,6 @@ void App::update_scrollbars(bool redraw)
 		vscroll_shown_ = need_v;
 		ShowScrollBar(hwnd_, SB_VERT, need_v ? TRUE : FALSE);
 	}
-
-	SCROLLINFO sv{};
-	sv.cbSize = sizeof(sv);
-	sv.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-	sv.nMin = 0;
-	// При переносе по словам полоса меряется визуальными рядами, а не
-	// логическими строками (иначе бегунок «прыгал» бы).
-	const std::size_t total_rows = ed_->word_wrap() ? ed_->row_count() : buf_->line_count();
-	sv.nMax = static_cast<int>(std::max<std::size_t>(1, total_rows) - 1);
-	sv.nPage = static_cast<UINT>(std::max<std::size_t>(1, ed_->visible_row_count()));
-	sv.nPos = static_cast<int>(ed_->first_visible_row());
-	SetScrollInfo(hwnd_, SB_VERT, &sv, redraw ? TRUE : FALSE);
-
-	const float cw = std::max(1.0F, renderer_.char_width());
-	SCROLLINFO sh{};
-	sh.cbSize = sizeof(sh);
-	sh.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-	sh.nMin = 0;
-	sh.nMax = static_cast<int>(std::max(1.0F, ed_->text_width() / cw));
-	sh.nPage = static_cast<UINT>(std::max(1.0F, renderer_.text_area_width() / cw));
-	sh.nPos = static_cast<int>(ed_->scroll_x() / cw);
-	SetScrollInfo(hwnd_, SB_HORZ, &sh, redraw ? TRUE : FALSE);
 }
 
 std::string App::insert_eol_bytes() const { return std::string(eol_bytes(eol_)); }
@@ -1465,10 +1484,19 @@ void App::on_size()
 	GetClientRect(hwnd_, &rc);
 	renderer_.resize(static_cast<UINT>(std::max<LONG>(1, rc.right)), static_cast<UINT>(std::max<LONG>(1, rc.bottom)));
 	sync_metrics();
-	// Окно могло стать меньше — курсор должен остаться видимым (при прокрутке
-	// колесом или полосой мы его, наоборот, не трогаем).
+	// Видимая область — всё, что осталось от текста после строки меню,
+	// статуса, полосы поиска и панели вопросов (те же слагаемые, что в
+	// Renderer::paint). Устанавливаем до ensure_caret_visible: он считает
+	// прокрутку по текущему размеру окна.
 	if (ed_)
+	{
+		const float find_h = show_find_ ? renderer_.find_height() : 0.0F;
+		ed_->set_viewport(renderer_.text_area_width(),
+			std::max(1.0F, renderer_.text_area_height() - find_h - ask_.inset));
+		// Окно могло стать меньше — курсор должен остаться видимым (при прокрутке
+		// колесом или полосой мы его, наоборот, не трогаем).
 		ed_->ensure_caret_visible();
+	}
 	if (ask_.active)
 		ask_build_view(); // панель пересчитывается под новый размер окна
 	update_scrollbars();
@@ -1828,38 +1856,40 @@ void App::on_vscroll(int code)
 	si.cbSize = sizeof(si);
 	si.fMask = SIF_ALL;
 	GetScrollInfo(hwnd_, SB_VERT, &si);
-	long target = static_cast<long>(ed_->first_visible_row());
+	const float lh = std::max(1.0F, ed_->metrics().line_height);
 	const long page = std::max<long>(1, static_cast<long>(si.nPage));
 	switch (code)
 	{
 	case SB_LINEUP:
-		target -= 1;
+		// Шаг — в рядах: без переноса ряд совпадает со строкой.
+		ed_->set_scroll_y(ed_->scroll_y() - lh);
 		break;
 	case SB_LINEDOWN:
-		target += 1;
+		ed_->set_scroll_y(ed_->scroll_y() + lh);
 		break;
 	case SB_PAGEUP:
-		target -= page;
+		ed_->set_scroll_y(ed_->scroll_y() - static_cast<float>(page) * lh);
 		break;
 	case SB_PAGEDOWN:
-		target += page;
+		ed_->set_scroll_y(ed_->scroll_y() + static_cast<float>(page) * lh);
 		break;
 	case SB_THUMBTRACK:
 	case SB_THUMBPOSITION:
-		target = si.nTrackPos;
+		// Позиция в рядах — ставим смещение напрямую (с клампом в низ),
+		// иначе дробная часть прежнего scroll_y «зависала» и бегунок
+		// не доезжал до края.
+		ed_->set_scroll_y(static_cast<float>(si.nTrackPos) * lh);
 		break;
 	case SB_TOP:
-		target = 0;
+		ed_->set_scroll_y(0.0F);
 		break;
 	case SB_BOTTOM:
-		target = static_cast<long>(ed_->word_wrap() ? ed_->row_count() : buf_->line_count());
+		// Край — в пикселях: последняя строка ровно у нижнего края.
+		ed_->set_scroll_y(std::max(0.0F, ed_->content_height() - ed_->viewport_height()));
 		break;
 	default:
 		return;
 	}
-	// Шаг — в рядах: без переноса ряд совпадает со строкой.
-	ed_->scroll_by(0.0F, static_cast<float>(target - static_cast<long>(ed_->first_visible_row())) *
-							 std::max(1.0F, ed_->metrics().line_height));
 	update_scrollbars();
 	invalidate();
 }
@@ -1871,33 +1901,35 @@ void App::on_hscroll(int code)
 	si.fMask = SIF_ALL;
 	GetScrollInfo(hwnd_, SB_HORZ, &si);
 	const float cw = std::max(1.0F, renderer_.char_width());
-	long target = si.nPos;
 	const long page = std::max<long>(1, static_cast<long>(si.nPage));
 	switch (code)
 	{
 	case SB_LINELEFT:
-		target -= 1;
+		ed_->set_scroll_x(ed_->scroll_x() - cw);
 		break;
 	case SB_LINERIGHT:
-		target += 1;
+		ed_->set_scroll_x(ed_->scroll_x() + cw);
 		break;
 	case SB_PAGELEFT:
-		target -= page;
+		ed_->set_scroll_x(ed_->scroll_x() - static_cast<float>(page) * cw);
 		break;
 	case SB_PAGERIGHT:
-		target += page;
+		ed_->set_scroll_x(ed_->scroll_x() + static_cast<float>(page) * cw);
 		break;
 	case SB_THUMBTRACK:
 	case SB_THUMBPOSITION:
-		target = si.nTrackPos;
+		// Позиция в символах — ставим смещение напрямую (с клампом).
+		ed_->set_scroll_x(static_cast<float>(si.nTrackPos) * cw);
 		break;
 	case SB_LEFT:
-		target = 0;
+		ed_->set_scroll_x(0.0F);
+		break;
+	case SB_RIGHT:
+		ed_->set_scroll_x(std::max(0.0F, ed_->text_width() - ed_->viewport_width() + cw));
 		break;
 	default:
 		return;
 	}
-	ed_->scroll_by(static_cast<float>(target) * cw - ed_->scroll_x(), 0.0F);
 	update_scrollbars();
 	invalidate();
 }
@@ -1996,11 +2028,17 @@ void App::on_command(int id)
 		break;
 	case kCmdUndo:
 		if (ed_->buffer().undo())
+		{
+			ed_->invalidate_width(); // undo менят строки вне after_edit
 			refresh_view();
+		}
 		break;
 	case kCmdRedo:
 		if (ed_->buffer().redo())
+		{
+			ed_->invalidate_width(); // redo тоже не проходят через after_edit
 			refresh_view();
+		}
 		break;
 	case kCmdCut:
 		clipboard_copy(true);
@@ -2552,6 +2590,7 @@ void App::find_replace_all()
 	find_hits_.clear();
 	find_index_ = 0;
 	find_total_ = 0;
+	ed_->invalidate_width(); // замена меняет строки вне after_edit
 	refresh_view();
 	find_sync_view();
 	invalidate();
@@ -4555,6 +4594,7 @@ void App::run_yofification(bool from_start)
 	{
 		mark_yofy_changes(last_yofy_.marks);
 		ed_->set_caret(std::min(from, buf_->size()));
+		ed_->invalidate_width(); // ёфикация меняет строки вне after_edit
 		refresh_view();
 	}
 	else

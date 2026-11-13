@@ -719,14 +719,13 @@ void Editor::after_edit(std::size_t edited)
 	if (wrap_)
 		invalidate_rows(buf_->line_of(edited));
 	want_cells_valid_ = false;
-	if (!width_dirty_)
-	{
-		const std::size_t line = buf_->line_of(edited);
-		const float w = static_cast<float>(prefix_cells(line, buf_->line_text(line).size())) *
-						metrics_.char_width;
-		if (w > cached_text_width_)
-			cached_text_width_ = w;
-	}
+	// Кэш ширины — максимум по строкам, и после правки он может только
+	// уменьшиться: удалили длинную строку, короткую вставили вместо неё.
+	// Раньше кэш спускался только в set_metrics, и после удаления самой
+	// длинной строки горизонтальная полоса прокрутки висели в окне
+	// без текста. Пересчитываем при первом обращении — это проход по
+	// первому kWidthScanLines строкам, а не по всему документу.
+	width_dirty_ = true;
 	ensure_caret_visible_impl();
 }
 
@@ -1048,6 +1047,21 @@ void Editor::scroll_by(float dx, float dy)
 void Editor::scroll_lines(long lines)
 {
 	scroll_by(0.0F, static_cast<float>(lines) * metrics_.line_height);
+}
+
+void Editor::set_scroll_y(float y)
+{
+	scroll_y_ = std::max(0.0F, std::min(y, std::max(0.0F, content_height() - view_h_)));
+}
+
+void Editor::set_scroll_x(float x)
+{
+	if (wrap_)
+	{
+		scroll_x_ = 0.0F;
+		return;
+	}
+	scroll_x_ = std::max(0.0F, std::min(x, std::max(0.0F, text_width() - view_w_ + metrics_.char_width)));
 }
 
 void Editor::ensure_caret_visible_impl()

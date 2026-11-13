@@ -111,6 +111,13 @@ public:
 	[[nodiscard]] float scroll_y() const noexcept { return scroll_y_; }
 	void scroll_by(float dx, float dy);
 	void scroll_lines(long lines);
+	// Абсолютная прокрутка: ставит смещение напрямую, с клампом под
+	// текущий размер окна. Полоса прокрутки и SB_TOP/SB_BOTTOM работают
+	// с абсолютной позицией, а не с дельтой — иначе дробная часть
+	// scroll_y (от ensure_caret_visible) никогда не убиралась, и первая
+	// строка оставалась подрезанной.
+	void set_scroll_y(float y);
+	void set_scroll_x(float x);
 	void ensure_caret_visible();
 
 	[[nodiscard]] std::size_t first_visible_line() const;
@@ -122,6 +129,9 @@ public:
 	// (note_line_cells). Для горизонтальной полосы прокрутки этого достаточно.
 	[[nodiscard]] float text_width() const;
 	void note_line_cells(std::size_t cells) const;
+	// Сбросить кэш ширины: вызвать при правках, которые не проходят через
+	// after_edit (undo/redo, замена по всей документу, ёфикация).
+	void invalidate_width();
 
 	// --- геометрия ---
 	// Координаты в системе документа (без отступа окна и без прокрутки):
@@ -186,7 +196,6 @@ private:
 	[[nodiscard]] std::size_t clamp_scroll_y(float y) const;
 	[[nodiscard]] std::size_t cells_to_byte(std::size_t line, std::size_t cells) const;
 	void after_edit(std::size_t caret);
-	void invalidate_width();
 
 	// --- ряды переноса ---
 	struct Segment

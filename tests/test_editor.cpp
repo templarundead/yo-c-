@@ -472,3 +472,80 @@ TEST_CASE("пустой документ: нет ширины текста и п
 	REQUIRE(ed->paste("короткая строка"));
 	CHECK(ed->text_width() > 0.0F);
 }
+
+TEST_CASE("прокрутка: абсолютная позиция доходит до краёв", "[editor]")
+{
+	// Полоса прокрутки работает с абсолютной позицией (в рядах/символах),
+	// поэтому set_scroll_y должен ставить смещение напрямую: SB_TOP → 0,
+	// SB_BOTTOM → content - view_h. Раньше использовалась дельта
+	// (target - first_visible_row) * lh, и дробная часть scroll_y
+	// (от ensure_caret_visible) «зависала» — первая строка оставалась
+	// подрезанной, а бегунок не доезжал до края.
+	auto ed = editor("1\n2\n3\n4\n5\n6\n7\n8\n9\n10");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F); // 3 строки
+
+	// Вверх — первая строка ровно у верхнего края.
+	ed->set_scroll_y(0.0F);
+	CHECK(ed->scroll_y() == 0.0F);
+	CHECK(ed->first_visible_line() == 0);
+
+	// Вниз — последняя строка ровно у нижнего края.
+	ed->set_scroll_y(100.0F); // за пределы — кламп
+	CHECK(ed->scroll_y() == 70.0F); // 10 строк * 10 - 30
+	CHECK(ed->first_visible_line() == 7);
+	const std::size_t last = ed->buffer().line_count() - 1;
+	CHECK(ed->line_top(last) - ed->scroll_y() >= 0.0F); // не уходит под верх
+	CHECK(ed->line_top(last) + m.line_height - ed->scroll_y() <= ed->viewport_height()); // не уходит под низ
+
+	// Дробная высота окна (не кратная lh): SB_BOTTOM ставит content - view_h.
+	ed->set_viewport(100.0F, 35.0F);
+	ed->set_scroll_y(65.0F); // 100 - 35
+	CHECK(ed->scroll_y() == 65.0F);
+	CHECK(ed->line_top(last) + m.line_height - ed->scroll_y() <= ed->viewport_height());
+}
+
+TEST_CASE("прокрутка: горизонтальная абсолютная позиция", "[editor]")
+{
+	auto ed = editor(std::string(100, 'x'));
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F);
+	CHECK(ed->text_width() == 800.0F);
+
+	ed->set_scroll_x(0.0F);
+	CHECK(ed->scroll_x() == 0.0F);
+	// Вправо: max = text_width - view_w + cw = 800 - 100 + 8.
+	ed->set_scroll_x(1000.0F);
+	CHECK(ed->scroll_x() == 708.0F);
+	ed->set_scroll_x(-100.0F);
+	CHECK(ed->scroll_x() == 0.0F);
+}
+
+TEST_CASE("ширина текста: уменьшается после удаления длинной строки", "[editor]")
+{
+	// Регрессия: кэш ширины был максимумом «как было» и спускался только
+	// в set_metrics. После удаления самой длинной строки text_width()
+	// возвращал прежнее значение, и горизонтальная полоса прокрутки
+	// висела в окне без текста. Теперь after_edit ставит width_dirty_.
+	auto ed = editor(std::string(100, 'x') + "\nкороткая");
+	Metrics m;
+	m.line_height = 10.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+	ed->set_viewport(100.0F, 30.0F);
+	CHECK(ed->text_width() == 800.0F); // 100 символов * 8 px
+
+	// Выделяем первую строку вместе с переводом и удаляем её.
+	ed->set_caret(0);
+	ed->set_caret(101, true); // [0, 101): 100 'x' + '\n'
+	REQUIRE(ed->has_selection());
+	ed->delete_selection();
+	CHECK(ed->buffer().line_count() == 1);
+	CHECK(ed->text_width() == 64.0F); // «короткая» = 8 символов * 8 px
+}
