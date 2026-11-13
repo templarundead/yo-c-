@@ -277,6 +277,82 @@ TEST_CASE("видимые строки: ленивый диапазон", "[edit
 	CHECK(ed->first_visible_line() == 0);
 }
 
+TEST_CASE("видимость ряда: координаты, а не высота окна", "[editor]")
+{
+	// Полоса окна [26, 230] — как в рендерере: 26 px полоса меню, дальше текст.
+	constexpr float top = 26.0F;
+	constexpr float bottom = 230.0F;
+	constexpr float lh = 17.0F;
+
+	CHECK(row_in_view(top, lh, top, bottom));
+	// Последняя строка в конце документа: 213..230 — целиком в окне.
+	CHECK(row_in_view(213.0F, lh, top, bottom));
+	CHECK(row_in_view(bottom, lh, top, bottom));		 // начинается на границе
+	CHECK(row_in_view(top - lh, lh, top, bottom));		 // уходит под полосу меню
+	CHECK(row_in_view(bottom - 1.0F, lh, top, bottom));	 // подрезан снизу
+
+	CHECK_FALSE(row_in_view(bottom + 1.0F, lh, top, bottom));
+	CHECK_FALSE(row_in_view(top - lh - 1.0F, lh, top, bottom));
+}
+
+TEST_CASE("последняя строка в конце документа видна", "[editor]")
+{
+	// Регрессия: проход отрисовки текста сравнивал y ряда с высотой текстовой
+	// области вместо её нижней границы, поэтому последняя строка в конце
+	// документа (она целиком лежит в окне) не рисовалась. Выделение рисуется
+	// другим проходом, без такой проверки и до клипа, — строка выглядела пустой
+	// полосой, но выделялась и копировалась.
+	std::string text;
+	for (int i = 0; i < 588; ++i)
+	{
+		text += "строка ";
+		text += std::to_string(i + 1);
+		text += "\n";
+	}
+	text += "последняя строка";
+	auto ed = editor(text);
+
+	Metrics m;
+	m.line_height = 17.0F;
+	m.char_width = 8.0F;
+	ed->set_metrics(m);
+
+	// Полоса меню сверху и статусбар снизу — как у настоящего окна.
+	constexpr float bar = 26.0F;
+	constexpr float status = 20.0F;
+	for (const float height : { 200.0F, 250.0F, 400.0F, 600.0F })
+	{
+		const float text_h = height - bar - status;
+		ed->set_viewport(1200.0F, text_h);
+		ed->move_doc_end();
+		REQUIRE(ed->scroll_y() > 0.0F); // документ выше окна: вид в конце
+
+		const float area_bottom = bar + text_h;
+		bool last_drawn = false;
+		for (const Editor::Row& row : ed->visible_rows())
+		{
+			const float y = bar + row.top - ed->scroll_y();
+			const bool visible = row_in_view(y, m.line_height, bar, area_bottom);
+			if (!visible)
+				continue;
+			if (row.line + 1 != ed->buffer().line_count())
+				continue;
+			last_drawn = true;
+			// Ряд не «подрезан краем»: он весь внутри видимой области.
+			CHECK(y >= bar);
+			CHECK(y + m.line_height <= area_bottom);
+		}
+		CHECK(last_drawn);
+
+		// Та самая арифметика, из-за которой строка пропадала: координата
+		// меньше нижней границы области, но больше её высоты.
+		const float y_last =
+			bar + ed->line_top(ed->buffer().line_count() - 1) - ed->scroll_y();
+		CHECK(y_last > text_h);
+		CHECK(y_last < area_bottom);
+	}
+}
+
 TEST_CASE("редактор поверх mmap: правки не трогают файл", "[editor]")
 {
 	auto src = std::make_shared<MemorySource>(std::string("файл\r\nне меняется\n"));

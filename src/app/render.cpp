@@ -988,7 +988,7 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 			if (!row.first_of_line)
 				continue; // при переносе номер — только у первого ряда
 			const float line_y = text_y0 + row.top - scroll_y;
-			if (line_y > text_y0 + text_h || line_y + lh < text_y0)
+			if (!row_in_view(line_y, lh, text_y0, text_y0 + text_h))
 				continue;
 			const std::wstring num = std::to_wstring(row.line + 1);
 			rt_->DrawTextW(num.c_str(), static_cast<UINT32>(num.size()), fmt_right_, 
@@ -1032,8 +1032,13 @@ void Renderer::paint(Editor& ed, const std::wstring& status, const FindBarView* 
 		if (bytes.empty() || row.to <= row.from)
 			continue;
 		const float line_y = text_y0 + row.top - scroll_y;
-		if (line_y > text_h || line_y + lh < 0.0F)
-			continue; // строка за пределами окна — раскладку не строим
+		// Видимость ряда — той же функцией ядра, что и у номеров строк:
+		// здесь сравнивалась координата с ВЫСОТОЙ области (text_h), из-за
+		// чего последняя строка в конце документа не рисовалась, хотя целиком
+		// лежала в окне (её выделение рисовалось другим проходом — полоса была
+		// видна, букв не было, скопировать текст при этом можно).
+		if (!row_in_view(line_y, lh, text_y0, text_y0 + text_h))
+			continue; // ряд за пределами окна — раскладку не строим
 		// Ширина текста для горизонтальной прокрутки уточняется по видимым
 		// строкам: полный проход по гигабайтному файлу недопустим.
 		if (!ed.word_wrap())
