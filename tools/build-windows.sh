@@ -20,9 +20,11 @@ if ! command -v zig >/dev/null 2>&1; then
 	exit 1
 fi
 
+# YO_STRIP: у зиг-драйвера -Wl,-s срезает таблицу символов и мёртвый код —
+# на замерах это ~2x по размеру exe. LTO здесь недоступно (см. README).
 cmake -G Ninja -S . -B "$BUILD" \
 	-DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/zig-windows.cmake \
-	-DCMAKE_BUILD_TYPE=Release \
+	-DCMAKE_BUILD_TYPE=Release -DYO_STRIP=ON \
 	-DYO_BUILD_GUI=ON -DYO_BUILD_CLI=ON -DYO_BUILD_TESTS=OFF
 cmake --build "$BUILD" -j
 

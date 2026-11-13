@@ -30,6 +30,12 @@ set(CMAKE_RC_COMPILER "${_yo_tools}/zig-rc.sh")
 set(CMAKE_AR "${_yo_tools}/zig-ar.sh")
 set(CMAKE_RANLIB "${_yo_tools}/zig-ranlib.sh")
 
+# LTO драйверу zig недоступен: lld-link падает на «undefined symbol: nanl»
+# из zigc.lib (проверено на zig 0.17.1, x86_64-windows-gnu). Конфигурацию
+# обрывать не надо — просто не включаем IPO (и не тратим время на
+# check_ipo_supported, который тоже линкует тестовую программу).
+set(YO_NO_IPO TRUE)
+
 # CMake не умеет определять стандарт по умолчанию для драйвера zig c++.
 set(CMAKE_CXX_STANDARD_COMPUTED_DEFAULT 23 CACHE STRING "" FORCE)
 set(CMAKE_CXX_EXTENSIONS_COMPUTED_DEFAULT OFF CACHE STRING "" FORCE)

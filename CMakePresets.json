@@ -39,7 +39,9 @@
         "YO_BUILD_TESTS": "OFF",
         "YO_BUILD_BENCH": "OFF",
         "YO_SANITIZERS": "OFF",
-        "YO_WARNINGS_AS_ERRORS": "ON"
+        "YO_WARNINGS_AS_ERRORS": "ON",
+        "YO_STATIC_RUNTIME": "ON",
+        "YO_LTO": "ON"
       }
     },
     {
@@ -79,9 +81,29 @@
       }
     },
     {
+      "name": "linux-clang-release",
+      "displayName": "Linux clang Release (core + CLI, LTO, strip)",
+      "description": "Релизная сборка Linux-артефактов: без санитайзеров, LTO, strip. Прежний релиз собирался на debug-пресете и уезжал к пользователям с ASan.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-clang-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "YO_BUILD_GUI": "OFF",
+        "YO_BUILD_CLI": "ON",
+        "YO_BUILD_TESTS": "ON",
+        "YO_BUILD_BENCH": "OFF",
+        "YO_SANITIZERS": "OFF",
+        "YO_WARNINGS_AS_ERRORS": "ON",
+        "YO_LTO": "ON",
+        "YO_STRIP": "ON"
+      }
+    },
+    {
       "name": "win-msvc-release",
       "displayName": "Windows MSVC Release (совместимость)",
-      "description": "Проверка сборки MSVC (без clang-cl) для CI-матрицы.",
+      "description": "Проверка сборки MSVC (без clang-cl) для CI-матрицы. LTO здесь выключен намеренно: /GL+/LTCG у MSVC — отдельная ветка линковки, её проверяет релизный пресет clang-cl.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/win-msvc-release",
       "cacheVariables": {
@@ -92,7 +114,9 @@
         "YO_BUILD_TESTS": "OFF",
         "YO_BUILD_BENCH": "OFF",
         "YO_SANITIZERS": "OFF",
-        "YO_WARNINGS_AS_ERRORS": "ON"
+        "YO_WARNINGS_AS_ERRORS": "ON",
+        "YO_STATIC_RUNTIME": "ON",
+        "YO_LTO": "OFF"
       }
     }
   ],
@@ -101,10 +125,12 @@
     { "name": "win-clang-release", "configurePreset": "win-clang-release" },
     { "name": "win-clang-bench", "configurePreset": "win-clang-bench" },
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
+    { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
     { "name": "win-msvc-release", "configurePreset": "win-msvc-release" }
   ],
   "testPresets": [
     { "name": "win-clang-debug", "configurePreset": "win-clang-debug", "output": { "outputOnFailure": true } },
-    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } }
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-release", "configurePreset": "linux-clang-release", "output": { "outputOnFailure": true } }
   ]
 }

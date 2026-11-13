@@ -26,6 +26,8 @@ target_compile_definitions(yo_tests PRIVATE
 )
 
 set_target_properties(yo_tests PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+# Ссылка с ядром должна собираться теми же флагами LTO, что и ядро.
+yo_apply_release_tweaks(yo_tests)
 
 # Макросы Catch2 (TEST_CASE) используют __COUNTER__ — в clang 21 это
 # «расширение C2y», и с -Werror оно становится ошибкой сборки тестов.

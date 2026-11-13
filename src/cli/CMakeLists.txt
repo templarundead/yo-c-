@@ -12,6 +12,7 @@ if(YO_HAS_PRINT)
 	add_executable(yo-cli main.cpp)
 	target_link_libraries(yo-cli PRIVATE yo::core)
 	set_target_properties(yo-cli PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+	yo_apply_release_tweaks(yo-cli)
 else()
 	message(WARNING
 		"yo-cli не будет собран: в стандартной библиотеке нет <print> (C++23).\n"

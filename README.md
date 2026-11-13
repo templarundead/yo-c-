@@ -219,6 +219,28 @@ cmake --build --preset win-clang-debug
 ctest --preset win-clang-debug
 ```
 
+### Релизная сборка и опции
+
+Поставочная Windows-сборка — `clang-cl`, `win-clang-release`. Её особенности:
+
+- **статический CRT** (`YO_STATIC_RUNTIME=ON`, `/MT`): `yo-gui.exe` и
+  `yo-cli.exe` не требуют `vcruntime140.dll`/`msvcp140.dll` — на «чистой»
+  Windows без VC++ Redistributable программа запускается. Системные DLL
+  (`d2d1`, `dwrite`, `uxtheme`, `comctl32`, `dwmapi`, `kernel32`, `user32`,
+  `gdi32`, `ole32`, `shell32`, `comdlg32`) остаются, разумеется, системными;
+- **LTO** (`YO_LTO=ON` в релизном пресете): включён только для наших целей
+  (ядро, CLI, GUI), сторонние abseil/RE2 собираются без LTO — иначе LTO
+  поверх сотен чужих единиц трансляции заметно замедляет сборку.
+
+Остальные опции сборки:
+
+| Опция | По умолчанию | Что делает |
+|---|---|---|
+| `YO_STATIC_RUNTIME` | ON | статический CRT у MSVC/clang-cl (в ASan-сборках принудительно динамический) |
+| `YO_LTO` | OFF (ON в `win-clang-release`, `linux-clang-release`) | LTO/IPO в Release; в Debug, с санитайзерами и на драйвере zig автоматически пропускается с сообщением |
+| `YO_STRIP` | OFF (ON в `linux-clang-release` и `tools/build-windows.sh`) | `-Wl,-s` у GNU-подобных линковщиков: у зиг-сборки размер exe падает примерно на треть |
+| `YO_LINKER` | `default` | `mold` — только для ELF (Linux); для PE/MSVC неприменим |
+
 Компилятор: **clang ≥ 21** (в том числе clang из zig 0.15+) — под него
 настроены предупреждения (`-Wconversion -Wsign-conversion -Wold-style-cast`)
 и на нём идут CI и замеры; **MSVC 19.4x** — для Windows-поставки
@@ -258,6 +280,10 @@ tools/build-windows.sh          # или вручную:
 (PE32+ x86-64), плюс `dist-win64/` и `yo-windows-x64.zip` с exe, словарями
 `yox.dat`/`yo_regexpr.dat` и лицензиями — в таком виде комплект запускается
 на Windows как есть.
+
+`tools/build-windows.sh` включает `YO_STRIP=ON`: без него зиг-сборка несёт
+таблицу символов и неиспользуемый код (в CI — только проверка, артефакты
+там делает clang-cl).
 
 Проверить без Windows можно так: `zig`-сборка статически линкует mingw-CRT,
 поэтому под wine работает и GUI, и CLI, и тесты (`-DYO_BUILD_TESTS=ON`,

@@ -31,3 +31,6 @@ else()
 endif()
 
 set_target_properties(yo_core PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+
+# LTO/IPO и strip — только в релизных сборках (см. корневой CMakeLists.txt).
+yo_apply_release_tweaks(yo_core)

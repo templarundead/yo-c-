@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         with: { arch: x64 }
       - run: cmake --preset win-clang-release
       - run: cmake --build --preset win-clang-release
@@ -27,11 +27,13 @@ jobs:
           Copy-Item build/win-clang-release/src/cli/yo-cli.exe dist/
           Copy-Item tests/data/yox.dat, tests/data/yo_regexpr.dat dist/
           Copy-Item README.md, NOTICE, LICENSE dist/
-          Compress-Archive -Path dist/* -DestinationPath "yo-${{ github.ref_name }}-windows-x64.zip" -Force
-      - uses: actions/upload-artifact@v4
+          # Архив не делаем: артефакт — это файлы, окончательный архив
+          # собирается один раз в джобе publish.
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
-          path: "yo-${{ github.ref_name }}-windows-x64.zip"
+          path: dist/
+          if-no-files-found: error
 
   linux:
     runs-on: ubuntu-24.04
@@ -40,32 +42,45 @@ jobs:
       - run: |
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 20
           sudo apt-get install -y ninja-build
-      - run: cmake --preset linux-clang-debug -DCMAKE_CXX_COMPILER=clang++-20 -DCMAKE_BUILD_TYPE=Release
-      - run: cmake --build --preset linux-clang-debug
+      # Отдельный релизный пресет: без санитайзеров, с LTO и strip. Раньше
+      # здесь собирался debug-пресет с -DCMAKE_BUILD_TYPE=Release, и ASan
+      # оставался включённым — в поставку уезжал инструментированный бинарник.
+      - run: cmake --preset linux-clang-release -DCMAKE_CXX_COMPILER=clang++-20
+      - run: cmake --build --preset linux-clang-release
       - name: Тесты перед публикацией
-        run: ctest --test-dir build/linux-clang-debug --output-on-failure
-      - name: Архив CLI
+        run: ctest --test-dir build/linux-clang-release --output-on-failure
+      - name: Комплект
         run: |
           mkdir -p dist
-          cp build/linux-clang-debug/src/cli/yo-cli dist/
+          cp build/linux-clang-release/src/cli/yo-cli dist/
           cp README.md NOTICE LICENSE dist/
-          tar -czf "yo-${{ github.ref_name }}-linux-x86_64.tar.gz" -C dist .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
-          path: "yo-${{ github.ref_name }}-linux-x86_64.tar.gz"
+          path: dist/
+          if-no-files-found: error
 
   publish:
     needs: [windows, linux]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: artifacts }
+      - name: Архивы релиза
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          # Один архив на платформу: именно его и скачают пользователи.
+          (cd artifacts/windows && zip -qr "../../yo-$tag-windows-x64.zip" .)
+          (cd artifacts/linux && tar -czf "../../yo-$tag-linux-x86_64.tar.gz" .)
+          ls -lh yo-"$tag"-*
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
+          # -R: в джобе нет checkout, и gh не может определить репозиторий сам.
+          gh release create "${{ github.ref_name }}" -R "${{ github.repository }}" \
             --title "Ё ${{ github.ref_name }}" \
             --generate-notes \
-            artifacts/windows/*.zip artifacts/linux/*.tar.gz
+            "yo-${{ github.ref_name }}-windows-x64.zip" \
+            "yo-${{ github.ref_name }}-linux-x86_64.tar.gz"
